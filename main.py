@@ -267,7 +267,7 @@ def download_image(url, file_name, folder_id, extension, thread_name):
 def queue_image_download(thread_name, attachments, folder_id=None):
 
     try:
-        thread_name = thread_name.replace("'", "\\'")
+        thread_name = thread_name.replace("'", "\x27")
         logger.debug(f"Thread Name: {thread_name}")
 
         if folder_id is None:
@@ -287,7 +287,7 @@ def queue_image_download(thread_name, attachments, folder_id=None):
 
                     file_name = IMAGE_NAME_PATTERN.findall(url_lower)[0]
 
-                    file_name = file_name.replace(" ", "_").replace("'", "'")
+                    file_name = file_name.replace(" ", "_").replace("'", "\x27")
 
                     if file_name is None:
                         logger.debug("Could not find image name")
