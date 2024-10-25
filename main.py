@@ -1,4 +1,3 @@
-import asyncio
 import json
 import re
 import time
@@ -14,6 +13,8 @@ from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload
 from PIL import Image
+import logging
+import logging.handlers
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -47,30 +48,46 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 # Create a thread pool for downloading images
 EXECUTOR = ThreadPoolExecutor(max_workers=1)
 
+logger = logging.getLogger("photo-bot")
+
+
+def setup_logger(logger_setup, log_level=logging.INFO):
+    logger_setup.setLevel(log_level)
+
+    logging.getLogger("discord.http").setLevel(log_level)
+    handler = logging.StreamHandler()
+    formatter = logging.Formatter(
+        f"\x1b[30;1m%(asctime)s\x1b[0m \x1b[34;1m%(levelname)-8s\x1b[0m \x1b[35m%(name)s\x1b[0m %(message)s",
+        "%Y-%m-%d %H:%M:%S",
+    )
+    handler.setFormatter(formatter)
+    logger_setup.addHandler(handler)
+
 
 def validate_config(config) -> None:
     """Validate the configuration file to ensure all required keys are present"""
     if any(
         key not in config
-        for key in [
+        for key in (
             "DISCORD_TOKEN",
             "PARENT_FOLDER_ID",
             "CHANNEL_NAME",
-        ]
+            "SHARED_DRIVE_ID",
+        )
     ):
-        print("Missing required configuration keys")
+        logger.error("Missing required configuration keys")
         exit(1)
 
 
 def authenticate_google_drive():
     """Authenticate the user and return a service object"""
-    print("authenticating google cloud service account")
+    logger.info("authenticating google cloud service account")
     creds = Credentials.from_service_account_file(
         "config/service-credentials.json", scopes=SCOPES
     )
     delegated_creds = creds.with_subject("glump@apoez.org")
 
-    print("creating google cloud service")
+    logger.info("creating google cloud service")
     service = build("drive", "v3", credentials=delegated_creds)
     return service
 
@@ -92,7 +109,7 @@ def check_folder_exists(folder_name):
             )
             break
         except Exception as e:
-            print(f"Failed to find folder: {e}")
+            logger.debug(f"Failed to find folder: {e}")
             time.sleep(1)
 
     folders = response.get("files", [])
@@ -124,7 +141,7 @@ def create_folder(folder_name):
             )
             break
         except Exception as e:
-            print(f"Failed to create folder: {e}")
+            logger.debug(f"Failed to create folder: {e}")
             time.sleep(3)
 
     if new_folder:
@@ -149,7 +166,7 @@ def upload_image(folder_id, image_data, image_name, extension, thread_name):
             image_data, mimetype=f"image/{extension}", resumable=True
         )
     except Exception as e:
-        print(f"Failed to create media object: {e}")
+        logger.debug(f"Failed to create media object: {e}")
 
     for _ in range(3):
         try:
@@ -166,52 +183,62 @@ def upload_image(folder_id, image_data, image_name, extension, thread_name):
             )
             break
         except Exception as e:
-            print(f"Failed to upload image: {e}")
+            logger.debug(f"Failed to upload image: {e}")
             time.sleep(3)
 
-    print(f"{thread_name} File ID: {uploaded_image.get("id")}")
+    logger.info(f"{thread_name} {image_name} File ID: {uploaded_image.get("id")}")
     time.sleep(1)
 
 
 def download_image(url, file_name, folder_id, extension, thread_name):
-    response = requests.get(url)
+    for _ in range(3):
+        try:
+            response = requests.get(url)
 
-    if response.status_code == 200:
-        image_data = response.content
-        if "heic" == extension or "heif" == extension:
-            try:
-                heif_file = pyheif.read(BytesIO(response.content))
-
-                # Convert to a Pillow Image object
-                image = Image.frombytes(
-                    heif_file.mode,
-                    heif_file.size,
-                    heif_file.data,
-                    "raw",
-                    heif_file.mode,
-                    heif_file.stride,
-                )
-
-                img_bytes = BytesIO()
-                image.save(img_bytes, format="JPEG")
-                image_data = img_bytes.getvalue()
-                extension = "jpeg"
-                file_name = file_name.replace("heic", "jpeg")
-            except Exception as e:
-                print(f"Failed to convert HEIC/HEIF image: {e}")
+            if response.status_code == 200:
                 image_data = response.content
+                if "heic" == extension or "heif" == extension:
+                    try:
+                        heif_file = pyheif.read(BytesIO(response.content))
 
-        image_data_bytes = BytesIO(image_data)
+                        # Convert to a Pillow Image object
+                        image = Image.frombytes(
+                            heif_file.mode,
+                            heif_file.size,
+                            heif_file.data,
+                            "raw",
+                            heif_file.mode,
+                            heif_file.stride,
+                        )
 
-        upload_image(folder_id, image_data_bytes, file_name, extension, thread_name)
-    else:
-        print(f"Failed to download image from {url}")
+                        img_bytes = BytesIO()
+                        image.save(img_bytes, format="JPEG")
+                        image_data = img_bytes.getvalue()
+                        extension = "jpeg"
+                        file_name = file_name.replace("heic", "jpeg")
+                    except Exception as e:
+                        logger.debug(f"Failed to convert HEIC/HEIF image: {e}")
+                        image_data = response.content
+
+                image_data_bytes = BytesIO(image_data)
+
+                upload_image(
+                    folder_id, image_data_bytes, file_name, extension, thread_name
+                )
+                break
+            else:
+                logger.debug(f"Failed to download image from {url}")
+        except Exception as e:
+            logger.debug(f"Failed to download image: {e}")
+            time.sleep(3)
 
 
 def queue_image_download(thread_name, attachments):
     folder_id = check_folder_exists(thread_name)
     if folder_id is None:
         create_folder(thread_name)
+
+    logger.debug(f"FOLDER ID: {folder_id}")
 
     image_count = 0
 
@@ -224,7 +251,7 @@ def queue_image_download(thread_name, attachments):
             file_name = IMAGE_NAME_PATTERN.findall(url_lower)[0]
 
             if file_name is None:
-                print("Could not find image name")
+                logger.debug("Could not find image name")
                 continue
 
             # Queue the download task
@@ -240,18 +267,20 @@ def queue_image_download(thread_name, attachments):
 
 @bot.event
 async def on_ready() -> None:
-    print(f"Logged in as {bot.user}")
+    logger.info(f"Logged in as {bot.user}")
 
 
 @bot.event
 async def on_message(message: discord.message.Message) -> None:
+    logger.debug(f"Recieved message: {message.content}")
 
     if isinstance(message.channel, discord.Thread) and CONFIG["CHANNEL_NAME"] == str(
         message.channel.parent
     ):
         if message.attachments:
+            logger.debug(f"Recieved attachments: {message.attachments}")
             thread_name = message.channel.name
-            print("Recieved message in", thread_name)
+            logger.info("Recieved message in", thread_name)
 
             EXECUTOR.submit(queue_image_download, thread_name, message.attachments)
 
@@ -268,6 +297,9 @@ async def on_message(message: discord.message.Message) -> None:
 if __name__ == "__main__":
     with open("config/config.json", "r") as config_file:
         CONFIG = json.load(config_file)
+
+    setup_logger(logger, CONFIG.get("LOGGING", "INFO").upper())
+    logger.debug(f"Loaded config: {CONFIG}")
 
     validate_config(CONFIG)
 
