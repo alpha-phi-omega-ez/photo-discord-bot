@@ -233,10 +233,11 @@ def download_image(url, file_name, folder_id, extension, thread_name):
             time.sleep(3)
 
 
-def queue_image_download(thread_name, attachments):
-    folder_id = check_folder_exists(thread_name)
-    if folder_id is None:
-        create_folder(thread_name)
+def queue_image_download(thread_name, attachments, folder_id=None):
+    if not folder_id:
+        folder_id = check_folder_exists(thread_name)
+        if folder_id is None:
+            create_folder(thread_name)
 
     logger.debug(f"FOLDER ID: {folder_id}")
 
@@ -265,6 +266,26 @@ def queue_image_download(thread_name, attachments):
             )
 
 
+async def process_message(message, folder_id=None):
+    if message.attachments:
+        logger.debug(f"Recieved attachments: {message.attachments}")
+        thread_name = message.channel.name
+        logger.info(f"Recieved message in {thread_name}")
+
+        EXECUTOR.submit(
+            queue_image_download, thread_name, message.attachments, folder_id
+        )
+
+        if message.guild is not None:
+            emoji = discord.utils.get(message.guild.emojis, name="glump_photo")
+            if emoji:
+                await message.add_reaction(emoji)
+            else:
+                await message.add_reaction("👍")
+        else:
+            await message.add_reaction("👍")
+
+
 @bot.event
 async def on_ready() -> None:
     logger.info(f"Logged in as {bot.user}")
@@ -277,21 +298,7 @@ async def on_message(message: discord.message.Message) -> None:
     if isinstance(message.channel, discord.Thread) and CONFIG["CHANNEL_NAME"] == str(
         message.channel.parent
     ):
-        if message.attachments:
-            logger.debug(f"Recieved attachments: {message.attachments}")
-            thread_name = message.channel.name
-            logger.info("Recieved message in", thread_name)
-
-            EXECUTOR.submit(queue_image_download, thread_name, message.attachments)
-
-            if message.guild is not None:
-                emoji = discord.utils.get(message.guild.emojis, name="glump_photo")
-                if emoji:
-                    await message.add_reaction(emoji)
-                else:
-                    await message.add_reaction("👍")
-            else:
-                await message.add_reaction("👍")
+        await process_message(message)
 
 
 if __name__ == "__main__":
