@@ -1,8 +1,11 @@
-FROM --platform=linux/amd64 python:3.12.4-alpine3.20
+FROM --platform=linux/amd64 python:3.12-slim
 
 WORKDIR /app
 
-RUN apk add --no-cache gcc musl-dev libffi-dev python3-dev libheif-dev libjpeg-turbo-dev libpng-dev
+# Install dependencies
+RUN apt-get update && \
+    apt-get install -y gcc libheif-dev libffi-dev python3-dev libjpeg-dev libpng-dev && \
+    rm -rf /var/lib/apt/lists/*
 
 
 COPY requirements.txt .
