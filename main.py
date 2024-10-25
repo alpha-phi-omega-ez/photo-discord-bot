@@ -115,6 +115,8 @@ def check_folder_exists(folder_name):
     folders = response.get("files", [])
     if folders:
         return folders[0].get("id")
+
+    logger.warning(f"Failed to find folder: {folder_name}")
     return None
 
 
@@ -146,6 +148,8 @@ def create_folder(folder_name):
 
     if new_folder:
         return new_folder.get("id")
+
+    logger.warning(f"Failed to create folder: {folder_name}")
     return None
 
 
@@ -186,7 +190,10 @@ def upload_image(folder_id, image_data, image_name, extension, thread_name):
             logger.debug(f"Failed to upload image: {e}")
             time.sleep(3)
 
-    logger.info(f"{thread_name} {image_name} File ID: {uploaded_image.get("id")}")
+    if uploaded_image:
+        logger.info(f"{thread_name} {image_name} File ID: {uploaded_image.get("id")}")
+    else:
+        logger.warning(f"Failed to upload image: {image_name}")
     time.sleep(1)
 
 
@@ -225,23 +232,26 @@ def download_image(url, file_name, folder_id, extension, thread_name):
                 upload_image(
                     folder_id, image_data_bytes, file_name, extension, thread_name
                 )
-                break
+                return
             else:
                 logger.debug(f"Failed to download image from {url}")
         except Exception as e:
             logger.debug(f"Failed to download image: {e}")
             time.sleep(3)
 
+    logger.warning(f"Failed to download image: {url}")
+
 
 def queue_image_download(thread_name, attachments, folder_id=None):
+
+    thread_name = thread_name.replace("'", "\\'")
+
     if not folder_id:
         folder_id = check_folder_exists(thread_name)
         if folder_id is None:
             create_folder(thread_name)
 
     logger.debug(f"FOLDER ID: {folder_id}")
-
-    image_count = 0
 
     for attachment in attachments:
         url_lower = attachment.url.lower()
@@ -250,6 +260,8 @@ def queue_image_download(thread_name, attachments, folder_id=None):
             image_count += 1
 
             file_name = IMAGE_NAME_PATTERN.findall(url_lower)[0]
+
+            file_name = file_name.replace(" ", "_").replace("'", "\\'")
 
             if file_name is None:
                 logger.debug("Could not find image name")
