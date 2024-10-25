@@ -6,27 +6,13 @@ This bot reads in all the photos upload to threads in a discord channel and uplo
 
 [Use a virtualenv to create an isolated enviorment](https://virtualenv.pypa.io/en/latest/)
 
-Run the make command to install requirements
-
-```
-make
-```
-
-or with pip manually
+Install the required packages
 
 ```
 pip3 install -r requirements.txt
 ```
 
 ## Running the program
-
-Run description
-
-```
-make run
-```
-
-or with python manually
 
 ```
 python3 run.py
