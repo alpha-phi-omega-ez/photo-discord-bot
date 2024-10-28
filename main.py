@@ -543,6 +543,7 @@ async def on_message(message: discord.message.Message) -> None:
 @app_commands.describe(thread_id="The ID of the thread to read messages from")
 async def read_thread(interaction: discord.Interaction, thread_id: str) -> None:
     try:
+        await interaction.response.defer(ephemeral=True)  # Defer the initial response
         logger.info(f"Reading thread command called with ID: {thread_id}")
         # Fetch the thread using the provided thread ID
         thread = await bot.fetch_channel(int(thread_id))
@@ -560,17 +561,18 @@ async def read_thread(interaction: discord.Interaction, thread_id: str) -> None:
                 logger.debug(f"Message: {message}")
                 await process_message(message)
         else:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "The provided ID does not correspond to a thread.", ephemeral=True
             )
     except discord.NotFound:
-        await interaction.response.send_message(
+        await interaction.followup.send(
             "Thread not found. Please check the thread ID.", ephemeral=True
         )
         logger.info(f"Thread not found {thread_id}")
     except Exception as e:
-        await interaction.response.send_message(f"An error occurred", ephemeral=True)
         logger.error(f"An error occurred: {e}")
+        if not interaction.response.is_done():
+            await interaction.followup.send("An error occurred", ephemeral=True)
 
 
 @bot.tree.command(
@@ -584,6 +586,7 @@ async def read_message(
     interaction: discord.Interaction, message_id: str, folder_name: str
 ) -> None:
     try:
+        await interaction.response.defer(ephemeral=True)  # Defer the initial response
         logger.info(f"Reading message command called with ID: {message_id}")
         if not GUILD:
             raise Exception("Guild not found")
@@ -592,7 +595,7 @@ async def read_message(
                 message = await channel.fetch_message(int(message_id))
                 logger.debug(f"Message found in channel {channel.name}: {message}")
                 await process_message(message, thread_name=folder_name)
-                await interaction.response.send_message(
+                await interaction.followup.send(
                     f"Photo/Videos being uploaded to {folder_name}",
                     ephemeral=True,
                 )
@@ -601,14 +604,15 @@ async def read_message(
                 continue  # Message not found in this channel
             except discord.Forbidden:
                 continue  # Bot doesn't have permission to read this channel
-        await interaction.response.send_message(
+        await interaction.followup.send(
             f"Message could not be found by the bot, check that the bot has permission to view the channel the message is in",
             ephemeral=True,
         )
         logger.info("Message not found in any accessible channels.")
     except Exception as e:
-        await interaction.response.send_message(f"An error occurred", ephemeral=True)
         logger.error(f"An error occurred: {e}")
+        if not interaction.response.is_done():
+            await interaction.followup.send("An error occurred", ephemeral=True)
 
 
 if __name__ == "__main__":
