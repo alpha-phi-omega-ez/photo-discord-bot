@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import logging.handlers
@@ -12,6 +13,7 @@ from typing import Any
 import discord
 import pyheif
 import requests
+from discord import app_commands
 from discord.ext import commands
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
@@ -28,6 +30,7 @@ CONFIG = {}
 
 SHARED_DRIVE_ID = ""
 FOLDER_ID = ""
+GUILD = None
 
 IMAGE_EXTENSIONS = (
     ".png",
@@ -78,6 +81,7 @@ def validate_config(config) -> None:
             "PARENT_FOLDER_ID",
             "CHANNEL_NAME",
             "SHARED_DRIVE_ID",
+            "GUILD_ID",
         )
     ):
         logger.error("Missing required configuration keys")
@@ -123,6 +127,9 @@ def authenticate_google_drive() -> Any:
 
 def check_folder_exists(folder_name) -> str | None:
     try:
+        if not SERVICE:
+            raise Exception("Google Drive service not authenticated")
+
         for _ in range(3):
             try:
                 response = (
@@ -154,6 +161,8 @@ def check_folder_exists(folder_name) -> str | None:
 def create_folder(folder_name) -> str | None:
 
     try:
+        if not SERVICE:
+            raise Exception("Google Drive service not authenticated")
 
         # Define the metadata for the new folder
         folder_metadata = {
@@ -221,6 +230,8 @@ def upload(
 ) -> None:
 
     try:
+        if not SERVICE:
+            raise Exception("Google Drive service not authenticated")
         # Define metadata for the new file
         file_metadata = {
             "name": file_name.upper(),
@@ -472,14 +483,18 @@ def queue_file_downloads(thread_name, attachments, folder_id=None) -> None:
                     thread_name,
                 )
 
+            # Give time for folder and things to be created and completed
+            time.sleep(3)
+
     except Exception as e:
         logger.error(f"Failed to queue image download: {e}")
 
 
-async def process_message(message, folder_id=None):
+async def process_message(message, thread_name=None, folder_id=None):
     if "no upload" not in message.content.lower() and message.attachments:
         logger.debug(f"Recieved attachments: {message.attachments}")
-        thread_name = message.channel.name
+        if not thread_name:
+            thread_name = message.channel.name
         logger.info(f"Recieved message in {thread_name}")
 
         EXECUTOR.submit(
@@ -498,17 +513,102 @@ async def process_message(message, folder_id=None):
 
 @bot.event
 async def on_ready() -> None:
+    await bot.tree.sync()
+
+    global GUILD
+    GUILD = bot.get_guild(int(CONFIG["GUILD_ID"]))
+    logger.debug(f"Guild: {GUILD}")
+    if not GUILD:
+        logger.error("Failed to find guild")
+        exit(1)
+
     logger.info(f"Logged in as {bot.user}")
 
 
 @bot.event
 async def on_message(message: discord.message.Message) -> None:
-    logger.debug(f"Recieved message: {message.content}")
 
     if isinstance(message.channel, discord.Thread) and CONFIG["CHANNEL_NAME"] == str(
         message.channel.parent
     ):
+        logger.debug(f"Recieved message: {message.content}")
         await process_message(message)
+
+
+# Define the slash command to read messages from a thread
+@bot.tree.command(
+    name="threadimages",
+    description="Read all messages in a specific thread to upload photos",
+)
+@app_commands.describe(thread_id="The ID of the thread to read messages from")
+async def read_thread(interaction: discord.Interaction, thread_id: str) -> None:
+    try:
+        logger.info(f"Reading thread command called with ID: {thread_id}")
+        # Fetch the thread using the provided thread ID
+        thread = await bot.fetch_channel(int(thread_id))
+        logger.debug(f"Thread: {thread}")
+
+        # Check if the channel is a thread
+        if isinstance(thread, discord.Thread):
+            await interaction.response.send_message(
+                f"Reading messages in thread: {thread.name}",
+                ephemeral=True,
+            )
+
+            # Read and display all messages in the thread
+            async for message in thread.history(limit=None):
+                logger.debug(f"Message: {message}")
+                await process_message(message)
+        else:
+            await interaction.response.send_message(
+                "The provided ID does not correspond to a thread.", ephemeral=True
+            )
+    except discord.NotFound:
+        await interaction.response.send_message(
+            "Thread not found. Please check the thread ID.", ephemeral=True
+        )
+        logger.info(f"Thread not found {thread_id}")
+    except Exception as e:
+        await interaction.response.send_message(f"An error occurred", ephemeral=True)
+        logger.error(f"An error occurred: {e}")
+
+
+@bot.tree.command(
+    name="messageimages", description="Upload all attachments of a specific message"
+)
+@app_commands.describe(
+    message_id="The ID of the message to upload attachments from",
+    folder_name="The Folder Name where the attachments will be uploaded",
+)
+async def read_message(
+    interaction: discord.Interaction, message_id: str, folder_name: str
+) -> None:
+    try:
+        logger.info(f"Reading message command called with ID: {message_id}")
+        if not GUILD:
+            raise Exception("Guild not found")
+        for channel in GUILD.text_channels:
+            try:
+                message = await channel.fetch_message(int(message_id))
+                logger.debug(f"Message found in channel {channel.name}: {message}")
+                await process_message(message, thread_name=folder_name)
+                await interaction.response.send_message(
+                    f"Photo/Videos being uploaded to {folder_name}",
+                    ephemeral=True,
+                )
+                return
+            except discord.NotFound:
+                continue  # Message not found in this channel
+            except discord.Forbidden:
+                continue  # Bot doesn't have permission to read this channel
+        await interaction.response.send_message(
+            f"Message could not be found by the bot, check that the bot has permission to view the channel the message is in",
+            ephemeral=True,
+        )
+        logger.info("Message not found in any accessible channels.")
+    except Exception as e:
+        await interaction.response.send_message(f"An error occurred", ephemeral=True)
+        logger.error(f"An error occurred: {e}")
 
 
 if __name__ == "__main__":
