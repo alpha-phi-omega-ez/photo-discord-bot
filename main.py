@@ -1,10 +1,13 @@
 import json
 import logging
 import logging.handlers
+import os
 import re
+import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO
+from typing import Any
 
 import discord
 import pyheif
@@ -12,8 +15,9 @@ import requests
 from discord.ext import commands
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
-from googleapiclient.http import MediaIoBaseUpload
+from googleapiclient.http import MediaFileUpload, MediaIoBaseUpload
 from PIL import Image
+from psutil import virtual_memory
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -25,18 +29,20 @@ CONFIG = {}
 SHARED_DRIVE_ID = ""
 FOLDER_ID = ""
 
-EXTENSIONS = (
+IMAGE_EXTENSIONS = (
     ".png",
     ".jpg",
     ".jpeg",
     ".heic",
     ".heif",
 )
+VIDEO_EXTENSIONS = (".mp4", ".mov", ".avi", ".mkv")
 SCOPES = [
     "https://www.googleapis.com/auth/drive",
     "https://www.googleapis.com/auth/drive.file",
 ]
 IMAGE_NAME_PATTERN = re.compile(r"([\w]+\.(?:png|jpg|jpeg|heic|heif))")
+VIDEO_NAME_PATTERN = re.compile(r"([\w]+\.(?:mp4|mov|avi|mkv))")
 
 # google service
 SERVICE = None
@@ -78,7 +84,31 @@ def validate_config(config) -> None:
         exit(1)
 
 
-def authenticate_google_drive():
+def get_file_size(url) -> int | None:
+    """Returns the file size in bytes from a URL."""
+    try:
+        response = requests.head(url)
+        if response.status_code == 200 and "Content-Length" in response.headers:
+            logger.debug(f"File size for {url}: {response.headers['Content-Length']}")
+            return int(response.headers["Content-Length"])
+        else:
+            logger.debug("Could not retrieve file size.")
+            return None
+    except Exception as e:
+        logger.error(f"Failed to get file size: {e}")
+        return None
+
+
+def is_memory_available(file_size) -> bool:
+    """Check if enough memory is available for the given file size."""
+    available_memory = virtual_memory().available
+
+    logger.debug(f"Available memory: {available_memory}")
+
+    return (available_memory - 20000) > file_size
+
+
+def authenticate_google_drive() -> Any:
     """Authenticate the user and return a service object"""
     logger.info("authenticating google cloud service account")
     creds = Credentials.from_service_account_file(
@@ -91,7 +121,7 @@ def authenticate_google_drive():
     return service
 
 
-def check_folder_exists(folder_name):
+def check_folder_exists(folder_name) -> str | None:
     try:
         for _ in range(3):
             try:
@@ -121,7 +151,7 @@ def check_folder_exists(folder_name):
     return None
 
 
-def create_folder(folder_name):
+def create_folder(folder_name) -> str | None:
 
     try:
 
@@ -158,57 +188,93 @@ def create_folder(folder_name):
     return None
 
 
-def upload_image(folder_id, image_data, image_name, extension, thread_name):
+def convert_to_jpeg(image_data, file_name, extension):
+    try:
+        logger.debug("Converting HEIC/HEIF image")
+        heif_file = pyheif.read(BytesIO(image_data))
+
+        # Convert to a Pillow Image object
+        image = Image.frombytes(
+            heif_file.mode,
+            heif_file.size,
+            heif_file.data,
+            "raw",
+            heif_file.mode,
+            heif_file.stride,
+        )
+
+        img_bytes = BytesIO()
+        image.save(img_bytes, format="JPEG")
+        new_image_data = img_bytes.getvalue()
+        new_extension = "jpeg"
+        new_file_name = file_name.replace("heic", "jpeg")
+
+        logger.debug("Converted HEIC/HEIF image")
+        return new_image_data, new_file_name, new_extension
+    except Exception as e:
+        logger.debug(f"Failed to convert HEIC/HEIF image: {e}")
+        return image_data, file_name, extension
+
+
+def upload(
+    folder_id, stream_data, file_name, extension, thread_name, file_type, file_path=None
+) -> None:
 
     try:
         # Define metadata for the new file
         file_metadata = {
-            "name": image_name.upper(),
+            "name": file_name.upper(),
             "parents": [folder_id],  # Specify the parent folder ID
         }
 
         if extension == "jpg":
             extension = "jpeg"
 
-        # Set up the media upload using the BytesIO object
-        try:
+        media = None
+
+        if stream_data:
             media = MediaIoBaseUpload(
-                image_data, mimetype=f"image/{extension}", resumable=True
+                stream_data, mimetype=f"{file_type}/{extension}", resumable=True
             )
-        except Exception as e:
-            logger.debug(f"Failed to create media object: {e}")
+        elif file_path:
+            media = MediaFileUpload(
+                file_path, mimetype=f"{file_type}/{extension}", resumable=True
+            )
+
+        if media:
+            for _ in range(3):
+                try:
+                    # Upload the file
+                    uploaded_file = (
+                        SERVICE.files()
+                        .create(
+                            body=file_metadata,
+                            media_body=media,
+                            supportsAllDrives=True,  # Ensures compatibility with shared drives
+                            fields="id, name",
+                        )
+                        .execute()
+                    )
+                    break
+                except Exception as e:
+                    logger.debug(f"Failed to upload image: {e}")
+                    time.sleep(3)
+        else:
+            logger.error("No media data to upload")
             return
 
-        for _ in range(3):
-            try:
-                # Upload the file
-                uploaded_image = (
-                    SERVICE.files()
-                    .create(
-                        body=file_metadata,
-                        media_body=media,
-                        supportsAllDrives=True,  # Ensures compatibility with shared drives
-                        fields="id, name",
-                    )
-                    .execute()
-                )
-                break
-            except Exception as e:
-                logger.debug(f"Failed to upload image: {e}")
-                time.sleep(3)
-
-        if uploaded_image:
+        if uploaded_file:
             logger.info(
-                f"Uploaded {image_name} to {thread_name}, File ID: {uploaded_image.get("id")}"
+                f"Uploaded {file_name} to {thread_name}, File ID: {uploaded_file.get('id')}"
             )
         else:
-            logger.warning(f"Failed to upload image: {image_name}")
+            logger.warning(f"Failed to upload image: {file_name.upper()}")
         time.sleep(1)
     except Exception as e:
         logger.error(f"Failed to upload image: {e}")
 
 
-def download_image(url, file_name, folder_id, extension, thread_name):
+def download_image(url, file_name, folder_id, extension, thread_name) -> None:
     try:
         logger.debug(f"Downloading image from {url}")
         for _ in range(3):
@@ -222,35 +288,19 @@ def download_image(url, file_name, folder_id, extension, thread_name):
                     logger.debug(f"Downloaded image from {url}")
 
                     if "heic" == extension or "heif" == extension:
-                        try:
-                            logger.debug("Converting HEIC/HEIF image")
-                            heif_file = pyheif.read(BytesIO(response.content))
-
-                            # Convert to a Pillow Image object
-                            image = Image.frombytes(
-                                heif_file.mode,
-                                heif_file.size,
-                                heif_file.data,
-                                "raw",
-                                heif_file.mode,
-                                heif_file.stride,
-                            )
-
-                            img_bytes = BytesIO()
-                            image.save(img_bytes, format="JPEG")
-                            image_data = img_bytes.getvalue()
-                            extension = "jpeg"
-                            file_name = file_name.replace("heic", "jpeg")
-
-                            logger.debug("Converted HEIC/HEIF image")
-                        except Exception as e:
-                            logger.debug(f"Failed to convert HEIC/HEIF image: {e}")
-                            image_data = response.content
+                        image_data, file_name, extension = convert_to_jpeg(
+                            image_data, file_name, extension
+                        )
 
                     image_data_bytes = BytesIO(image_data)
 
-                    upload_image(
-                        folder_id, image_data_bytes, file_name, extension, thread_name
+                    upload(
+                        folder_id,
+                        image_data_bytes,
+                        file_name,
+                        extension,
+                        thread_name,
+                        "image",
                     )
                     return
                 else:
@@ -264,7 +314,102 @@ def download_image(url, file_name, folder_id, extension, thread_name):
         logger.error(f"Failed to download image: {e}")
 
 
-def queue_image_download(thread_name, attachments, folder_id=None):
+def download_video(folder_id, url, file_name, extension, thread_name) -> None:
+    try:
+
+        logger.debug(f"Downloading video from {url}")
+
+        for _ in range(3):
+            try:
+                file_size = get_file_size(url)
+
+                logger.debug(f"File size: {file_size}")
+
+                response = requests.get(url, stream=True)
+                logger.debug(f"Response {url}: {response.status_code}")
+
+                if response.status_code == 200:
+                    if False and file_size and is_memory_available(file_size):
+
+                        logger.debug(f"Downloading video from {url} to memory")
+
+                        # Use BytesIO as an in-memory file to store the download stream
+                        video_stream = BytesIO()
+
+                        for chunk in response.iter_content(chunk_size=8192):
+                            video_stream.write(chunk)
+
+                        # Reset the stream position to the start
+                        video_stream.seek(0)
+
+                        logger.debug("Completed download to memory")
+
+                        upload(
+                            folder_id,
+                            video_stream,
+                            file_name,
+                            extension,
+                            thread_name,
+                            "video",
+                        )
+                        return
+
+                    else:
+
+                        logger.debug(f"Downloading video from {url} to disk")
+
+                        # Create a temporary file with 'wb+' mode to read/write binary
+                        temp_file = tempfile.NamedTemporaryFile(
+                            delete=False, suffix=f".{extension}"
+                        )
+
+                        # Write the video content to the temp file in chunks
+                        for chunk in response.iter_content(chunk_size=8192):
+                            temp_file.write(chunk)
+
+                        temp_file.flush()  # Ensure all data is written
+                        temp_file.seek(
+                            0
+                        )  # Move to the beginning of the file for reading
+
+                        logger.debug(f"Completed download to disk: {temp_file.name}")
+
+                        if temp_file:
+                            try:
+                                upload(
+                                    folder_id,
+                                    None,
+                                    file_name,
+                                    extension,
+                                    thread_name,
+                                    "video",
+                                    temp_file.name,
+                                )
+                            finally:
+                                temp_file.close()  # Close the file
+                                os.unlink(temp_file.name)
+                                return
+                        else:
+                            logger.error("Failed to download video")
+                            return
+                else:
+                    logger.debug(f"Failed to download image from {url}")
+            except Exception as e:
+                logger.debug(f"Failed to download image: {e}")
+                time.sleep(3)
+    except Exception as e:
+        logger.error(f"Failed to download video: {e}")
+
+
+def find_file_name(pattern, url) -> str | None:
+    try:
+        return pattern.findall(url)[0].replace(" ", "_").replace("'", "\x27")
+    except Exception as e:
+        logger.debug(f"Failed to find file name: {e}")
+    return None
+
+
+def queue_file_downloads(thread_name, attachments, folder_id=None) -> None:
 
     try:
         thread_name = thread_name.replace("'", "\x27")
@@ -277,33 +422,56 @@ def queue_image_download(thread_name, attachments, folder_id=None):
 
         logger.info(f"FOLDER ID: {folder_id}")
 
-        if folder_id:
-            for attachment in attachments:
-                url_lower = attachment.url.lower()
+        if not folder_id:
+            logger.debug("Missing folder ID")
+            return
 
-                if any(ext in url_lower for ext in EXTENSIONS):
+        for attachment in attachments:
+            url_lower = attachment.url.lower()
 
-                    logger.debug(f"Found image attachment: {attachment.url}")
+            if any(ext in url_lower for ext in IMAGE_EXTENSIONS):
 
-                    file_name = IMAGE_NAME_PATTERN.findall(url_lower)[0]
+                logger.debug(f"Found image attachment: {attachment.url}")
 
-                    file_name = file_name.replace(" ", "_").replace("'", "\x27")
+                file_name = find_file_name(IMAGE_NAME_PATTERN, url_lower)
 
-                    if file_name is None:
-                        logger.debug("Could not find image name")
-                        continue
+                if file_name is None:
+                    logger.debug("Could not image file name")
+                    continue
 
-                    logger.debug(f"Found image name: {file_name}")
+                logger.debug(f"Found image name: {file_name}")
 
-                    # Queue the download task
-                    EXECUTOR.submit(
-                        download_image,
-                        attachment.url,
-                        file_name,
-                        folder_id,
-                        file_name.split(".")[-1],
-                        thread_name,
-                    )
+                # Queue the download task
+                EXECUTOR.submit(
+                    download_image,
+                    attachment.url,
+                    file_name,
+                    folder_id,
+                    file_name.split(".")[-1],
+                    thread_name,
+                )
+
+            elif any(ext in url_lower for ext in VIDEO_EXTENSIONS):
+                logger.debug(f"Found video attachment: {attachment.url}")
+
+                file_name = find_file_name(VIDEO_NAME_PATTERN, url_lower)
+
+                if file_name is None:
+                    logger.debug("Could not find video file name")
+                    continue
+
+                logger.debug(f"Found video name: {file_name}")
+
+                # Queue the download task
+                EXECUTOR.submit(
+                    download_video,
+                    folder_id,
+                    attachment.url,
+                    file_name,
+                    file_name.split(".")[-1],
+                    thread_name,
+                )
+
     except Exception as e:
         logger.error(f"Failed to queue image download: {e}")
 
@@ -315,7 +483,7 @@ async def process_message(message, folder_id=None):
         logger.info(f"Recieved message in {thread_name}")
 
         EXECUTOR.submit(
-            queue_image_download, thread_name, message.attachments, folder_id
+            queue_file_downloads, thread_name, message.attachments, folder_id
         )
 
         if message.guild is not None:
