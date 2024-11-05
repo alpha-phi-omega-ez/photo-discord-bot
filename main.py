@@ -82,6 +82,7 @@ def validate_config(config) -> None:
             "CHANNEL_NAME",
             "SHARED_DRIVE_ID",
             "GUILD_ID",
+            "VIDEO_IN_MEMORY",
         )
     ):
         logger.error("Missing required configuration keys")
@@ -340,7 +341,11 @@ def download_video(folder_id, url, file_name, extension, thread_name) -> None:
                 logger.debug(f"Response {url}: {response.status_code}")
 
                 if response.status_code == 200:
-                    if False and file_size and is_memory_available(file_size):
+                    if (
+                        CONFIG["VIDEO_IN_MEMORY"]
+                        and file_size
+                        and is_memory_available(file_size)
+                    ):
 
                         logger.debug(f"Downloading video from {url} to memory")
 
