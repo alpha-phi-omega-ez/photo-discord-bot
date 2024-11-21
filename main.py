@@ -1,27 +1,33 @@
-import asyncio
-import json
-import logging
-import logging.handlers
-import os
-import re
-import tempfile
-import time
 from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO
+from json import load
+from logging import INFO, Formatter, StreamHandler, getLogger
+from os import unlink
+from re import compile as re_compile
+from tempfile import NamedTemporaryFile
+from time import sleep
 from typing import Any
 
-import discord
-import pyheif
-import requests
-from discord import app_commands
+from discord import (
+    Forbidden,
+    Intents,
+    Interaction,
+    NotFound,
+    Thread,
+    app_commands,
+    message,
+    utils,
+)
 from discord.ext import commands
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload, MediaIoBaseUpload
 from PIL import Image
 from psutil import virtual_memory
+from pyheif import read as pyheif_read
+from requests import get, head
 
-intents = discord.Intents.default()
+intents = Intents.default()
 intents.message_content = True
 intents.guilds = True
 intents.message_content = True
@@ -44,8 +50,8 @@ SCOPES = [
     "https://www.googleapis.com/auth/drive",
     "https://www.googleapis.com/auth/drive.file",
 ]
-IMAGE_NAME_PATTERN = re.compile(r"([\w]+\.(?:png|jpg|jpeg|heic|heif))")
-VIDEO_NAME_PATTERN = re.compile(r"([\w]+\.(?:mp4|mov|avi|mkv))")
+IMAGE_NAME_PATTERN = re_compile(r"([\w]+\.(?:png|jpg|jpeg|heic|heif))")
+VIDEO_NAME_PATTERN = re_compile(r"([\w]+\.(?:mp4|mov|avi|mkv))")
 
 # google service
 SERVICE = None
@@ -56,15 +62,15 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 # Create a thread pool for downloading images
 EXECUTOR = ThreadPoolExecutor(max_workers=1)
 
-logger = logging.getLogger("photo-bot")
+logger = getLogger("photo-bot")
 
 
-def setup_logger(logger_setup, log_level=logging.INFO):
+def setup_logger(logger_setup, log_level=INFO):
     logger_setup.setLevel(log_level)
 
-    logging.getLogger("discord.http").setLevel(log_level)
-    handler = logging.StreamHandler()
-    formatter = logging.Formatter(
+    getLogger("discord.http").setLevel(log_level)
+    handler = StreamHandler()
+    formatter = Formatter(
         f"\x1b[30;1m%(asctime)s\x1b[0m \x1b[34;1m%(levelname)-8s\x1b[0m \x1b[35m%(name)s\x1b[0m %(message)s",
         "%Y-%m-%d %H:%M:%S",
     )
@@ -92,7 +98,7 @@ def validate_config(config) -> None:
 def get_file_size(url) -> int | None:
     """Returns the file size in bytes from a URL."""
     try:
-        response = requests.head(url)
+        response = head(url)
         if response.status_code == 200 and "Content-Length" in response.headers:
             logger.debug(f"File size for {url}: {response.headers['Content-Length']}")
             return int(response.headers["Content-Length"])
@@ -147,7 +153,7 @@ def check_folder_exists(folder_name) -> str | None:
                 break
             except Exception as e:
                 logger.debug(f"Failed to find folder: {e}")
-                time.sleep(1)
+                sleep(1)
 
         folders = response.get("files", [])
         if folders:
@@ -187,7 +193,7 @@ def create_folder(folder_name) -> str | None:
                 break
             except Exception as e:
                 logger.debug(f"Failed to create folder: {e}")
-                time.sleep(3)
+                sleep(3)
 
         if new_folder:
             return new_folder.get("id")
@@ -201,7 +207,7 @@ def create_folder(folder_name) -> str | None:
 def convert_to_jpeg(image_data, file_name, extension):
     try:
         logger.debug("Converting HEIC/HEIF image")
-        heif_file = pyheif.read(BytesIO(image_data))
+        heif_file = pyheif_read(BytesIO(image_data))
 
         # Convert to a Pillow Image object
         image = Image.frombytes(
@@ -270,7 +276,7 @@ def upload(
                     break
                 except Exception as e:
                     logger.debug(f"Failed to upload image: {e}")
-                    time.sleep(3)
+                    sleep(3)
         else:
             logger.error("No media data to upload")
             return
@@ -281,7 +287,7 @@ def upload(
             )
         else:
             logger.warning(f"Failed to upload image: {file_name.upper()}")
-        time.sleep(1)
+        sleep(1)
     except Exception as e:
         logger.error(f"Failed to upload image: {e}")
 
@@ -291,7 +297,7 @@ def download_image(url, file_name, folder_id, extension, thread_name) -> None:
         logger.debug(f"Downloading image from {url}")
         for _ in range(3):
             try:
-                response = requests.get(url)
+                response = get(url)
                 logger.debug(f"Response {url}: {response.status_code}")
 
                 if response.status_code == 200:
@@ -319,7 +325,7 @@ def download_image(url, file_name, folder_id, extension, thread_name) -> None:
                     logger.debug(f"Failed to download image from {url}")
             except Exception as e:
                 logger.debug(f"Failed to download image: {e}")
-                time.sleep(3)
+                sleep(3)
 
         logger.error(f"Failed to download image: {url}")
     except Exception as e:
@@ -337,7 +343,7 @@ def download_video(folder_id, url, file_name, extension, thread_name) -> None:
 
                 logger.debug(f"File size: {file_size}")
 
-                response = requests.get(url, stream=True)
+                response = get(url, stream=True)
                 logger.debug(f"Response {url}: {response.status_code}")
 
                 if response.status_code == 200:
@@ -375,7 +381,7 @@ def download_video(folder_id, url, file_name, extension, thread_name) -> None:
                         logger.debug(f"Downloading video from {url} to disk")
 
                         # Create a temporary file with 'wb+' mode to read/write binary
-                        temp_file = tempfile.NamedTemporaryFile(
+                        temp_file = NamedTemporaryFile(
                             delete=False, suffix=f".{extension}"
                         )
 
@@ -403,7 +409,7 @@ def download_video(folder_id, url, file_name, extension, thread_name) -> None:
                                 )
                             finally:
                                 temp_file.close()  # Close the file
-                                os.unlink(temp_file.name)
+                                unlink(temp_file.name)
                                 return
                         else:
                             logger.error("Failed to download video")
@@ -412,7 +418,7 @@ def download_video(folder_id, url, file_name, extension, thread_name) -> None:
                     logger.debug(f"Failed to download image from {url}")
             except Exception as e:
                 logger.debug(f"Failed to download image: {e}")
-                time.sleep(3)
+                sleep(3)
     except Exception as e:
         logger.error(f"Failed to download video: {e}")
 
@@ -489,7 +495,7 @@ def queue_file_downloads(thread_name, attachments, folder_id=None) -> None:
                 )
 
             # Give time for folder and things to be created and completed
-            time.sleep(3)
+            sleep(3)
 
     except Exception as e:
         logger.error(f"Failed to queue image download: {e}")
@@ -507,7 +513,7 @@ async def process_message(message, thread_name=None, folder_id=None):
         )
 
         if message.guild is not None:
-            emoji = discord.utils.get(message.guild.emojis, name="glump_photo")
+            emoji = utils.get(message.guild.emojis, name="glump_photo")
             if emoji:
                 await message.add_reaction(emoji)
             else:
@@ -531,9 +537,9 @@ async def on_ready() -> None:
 
 
 @bot.event
-async def on_message(message: discord.message.Message) -> None:
+async def on_message(message: message.Message) -> None:
 
-    if isinstance(message.channel, discord.Thread) and CONFIG["CHANNEL_NAME"] == str(
+    if isinstance(message.channel, Thread) and CONFIG["CHANNEL_NAME"] == str(
         message.channel.parent
     ):
         logger.debug(f"Recieved message: {message.content}")
@@ -546,7 +552,7 @@ async def on_message(message: discord.message.Message) -> None:
     description="Read all messages in a specific thread to upload photos",
 )
 @app_commands.describe(thread_id="The ID of the thread to read messages from")
-async def read_thread(interaction: discord.Interaction, thread_id: str) -> None:
+async def read_thread(interaction: Interaction, thread_id: str) -> None:
     try:
         await interaction.response.defer(ephemeral=True)  # Defer the initial response
         logger.info(f"Reading thread command called with ID: {thread_id}")
@@ -555,7 +561,7 @@ async def read_thread(interaction: discord.Interaction, thread_id: str) -> None:
         logger.debug(f"Thread: {thread}")
 
         # Check if the channel is a thread
-        if isinstance(thread, discord.Thread):
+        if isinstance(thread, Thread):
             await interaction.response.send_message(
                 f"Reading messages in thread: {thread.name}",
                 ephemeral=True,
@@ -569,7 +575,7 @@ async def read_thread(interaction: discord.Interaction, thread_id: str) -> None:
             await interaction.followup.send(
                 "The provided ID does not correspond to a thread.", ephemeral=True
             )
-    except discord.NotFound:
+    except NotFound:
         await interaction.followup.send(
             "Thread not found. Please check the thread ID.", ephemeral=True
         )
@@ -588,7 +594,7 @@ async def read_thread(interaction: discord.Interaction, thread_id: str) -> None:
     folder_name="The Folder Name where the attachments will be uploaded",
 )
 async def read_message(
-    interaction: discord.Interaction, message_id: str, folder_name: str
+    interaction: Interaction, message_id: str, folder_name: str
 ) -> None:
     try:
         await interaction.response.defer(ephemeral=True)  # Defer the initial response
@@ -605,10 +611,21 @@ async def read_message(
                     ephemeral=True,
                 )
                 return
-            except discord.NotFound:
+            except NotFound:
+                logger.debug(f"Message not found in channel {channel.name}")
                 continue  # Message not found in this channel
-            except discord.Forbidden:
+            except Forbidden:
+                logger.warning(
+                    f"Bot does not have permission to read channel {channel.name}"
+                )
                 continue  # Bot doesn't have permission to read this channel
+            except ValueError as e:
+                logger.info(f"Given message id was not an integer: {e}")
+                await interaction.followup.send(
+                    f"Given ID was not an integer",
+                    ephemeral=True,
+                )
+                return
         await interaction.followup.send(
             f"Message could not be found by the bot, check that the bot has permission to view the channel the message is in",
             ephemeral=True,
@@ -617,12 +634,14 @@ async def read_message(
     except Exception as e:
         logger.error(f"An error occurred: {e}")
         if not interaction.response.is_done():
-            await interaction.followup.send("An error occurred", ephemeral=True)
+            await interaction.followup.send(
+                "An error occurred contact administrator", ephemeral=True
+            )
 
 
 if __name__ == "__main__":
     with open("config/config.json", "r") as config_file:
-        CONFIG = json.load(config_file)
+        CONFIG = load(config_file)
 
     setup_logger(logger, CONFIG.get("LOGGING", "INFO").upper())
     logger.debug(f"Loaded config: {CONFIG}")
