@@ -7,6 +7,7 @@ certifi==2024.8.30
 cffi==1.17.1
 charset-normalizer==3.4.0
 discord.py==2.4.0
+dnspython==2.7.0
 frozenlist==1.5.0
 google-api-core==2.23.0
 google-api-python-client==2.154.0
@@ -27,6 +28,7 @@ pyasn1==0.6.1
 pyasn1_modules==0.4.1
 pycparser==2.22
 pyheif==0.8.0
+pymongo==4.10.1
 pyparsing==3.2.0
 requests==2.32.3
 requests-oauthlib==2.0.0
