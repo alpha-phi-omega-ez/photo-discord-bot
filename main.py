@@ -89,6 +89,7 @@ def validate_config(config) -> None:
             "SHARED_DRIVE_ID",
             "GUILD_ID",
             "VIDEO_IN_MEMORY",
+            "DELEGATE_EMAIL",
         )
     ):
         logger.error("Missing required configuration keys")
@@ -125,7 +126,7 @@ def authenticate_google_drive() -> Any:
     creds = Credentials.from_service_account_file(
         "config/service-credentials.json", scopes=SCOPES
     )
-    delegated_creds = creds.with_subject("glump@apoez.org")
+    delegated_creds = creds.with_subject(CONFIG["DELEGATE_EMAIL"])
 
     logger.info("creating google cloud service")
     service = build("drive", "v3", credentials=delegated_creds)
