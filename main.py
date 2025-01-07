@@ -512,15 +512,16 @@ async def process_message(message, thread_name=None, folder_id=None):
         EXECUTOR.submit(
             queue_file_downloads, thread_name, message.attachments, folder_id
         )
+        await message.add_reaction("👍")
 
-        if message.guild is not None:
-            emoji = utils.get(message.guild.emojis, name="glump_photo")
-            if emoji:
-                await message.add_reaction(emoji)
-            else:
-                await message.add_reaction("👍")
-        else:
-            await message.add_reaction("👍")
+        # if message.guild is not None:
+        #     emoji = utils.get(message.guild.emojis, name="glump_photo")
+        #     if emoji:
+        #         await message.add_reaction(emoji)
+        #     else:
+        #         await message.add_reaction("👍")
+        # else:
+        #     await message.add_reaction("👍")
 
 
 @bot.event
@@ -616,7 +617,7 @@ async def read_message(
                 logger.debug(f"Message not found in channel {channel.name}")
                 continue  # Message not found in this channel
             except Forbidden:
-                logger.warning(
+                logger.debug(
                     f"Bot does not have permission to read channel {channel.name}"
                 )
                 continue  # Bot doesn't have permission to read this channel
