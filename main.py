@@ -2,11 +2,12 @@ from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO
 from json import load
 from logging import INFO, Formatter, StreamHandler, getLogger
-from os import unlink
+from os import unlink, getenv
 from re import compile as re_compile
 from tempfile import NamedTemporaryFile
 from time import sleep
 from typing import Any
+from pymongo import MongoClient
 
 from discord import (
     Forbidden,
@@ -32,11 +33,16 @@ intents.message_content = True
 intents.guilds = True
 intents.message_content = True
 
-CONFIG = {}
 
-SHARED_DRIVE_ID = ""
-FOLDER_ID = ""
-GUILD = None
+client = MongoClient(getenv("MONGODB_URI", "mongodb://localhost:27017"))
+db = client["photo-bot"]
+config_collection = db["config"]
+CONFIG = config_collection.find()[0]
+client.close()
+
+SHARED_DRIVE_ID = CONFIG["SHARED_DRIVE_ID"]
+FOLDER_ID = CONFIG["PARENT_FOLDER_ID"]
+GUILD = CONFIG["GUILD_ID"]
 
 IMAGE_EXTENSIONS = (
     ".png",
@@ -78,23 +84,6 @@ def setup_logger(logger_setup, log_level=INFO):
     logger_setup.addHandler(handler)
 
 
-def validate_config(config) -> None:
-    """Validate the configuration file to ensure all required keys are present"""
-    if any(
-        key not in config
-        for key in (
-            "DISCORD_TOKEN",
-            "PARENT_FOLDER_ID",
-            "CHANNEL_NAME",
-            "SHARED_DRIVE_ID",
-            "GUILD_ID",
-            "VIDEO_IN_MEMORY",
-        )
-    ):
-        logger.error("Missing required configuration keys")
-        exit(1)
-
-
 def get_file_size(url) -> int | None:
     """Returns the file size in bytes from a URL."""
     try:
@@ -125,7 +114,7 @@ def authenticate_google_drive() -> Any:
     creds = Credentials.from_service_account_file(
         "config/service-credentials.json", scopes=SCOPES
     )
-    delegated_creds = creds.with_subject("glump@apoez.org")
+    delegated_creds = creds.with_subject(CONFIG["DELEGATE_EMAIL"])
 
     logger.info("creating google cloud service")
     service = build("drive", "v3", credentials=delegated_creds)
@@ -527,7 +516,6 @@ async def on_ready() -> None:
     await bot.tree.sync()
 
     global GUILD
-    GUILD = bot.get_guild(int(CONFIG["GUILD_ID"]))
     logger.debug(f"Guild: {GUILD}")
     if not GUILD:
         logger.error("Failed to find guild")
@@ -640,16 +628,8 @@ async def read_message(
 
 
 if __name__ == "__main__":
-    with open("config/config.json", "r") as config_file:
-        CONFIG = load(config_file)
-
     setup_logger(logger, CONFIG.get("LOGGING", "INFO").upper())
     logger.debug(f"Loaded config: {CONFIG}")
-
-    validate_config(CONFIG)
-
-    SHARED_DRIVE_ID = CONFIG["SHARED_DRIVE_ID"]
-    FOLDER_ID = CONFIG["PARENT_FOLDER_ID"]
 
     SERVICE = authenticate_google_drive()
 
