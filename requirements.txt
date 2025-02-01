@@ -18,7 +18,7 @@ httplib2==0.22.0
 idna==3.10
 multidict==6.1.0
 oauthlib==3.2.2
-pillow==11.0.0
+pillow==11.1.0
 propcache==0.2.1
 proto-plus==1.25.0
 protobuf==5.29.0
