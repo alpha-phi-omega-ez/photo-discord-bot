@@ -16,7 +16,6 @@ from discord import (
     Thread,
     app_commands,
     message,
-    utils,
 )
 from discord.ext import commands
 from google.oauth2.service_account import Credentials
