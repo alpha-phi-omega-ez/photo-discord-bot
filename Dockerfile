@@ -1,4 +1,5 @@
-FROM --platform=linux/amd64 python:3.12-slim
+# Use the latest uv image with python 3.12.9 and debian
+FROM ghcr.io/astral-sh/uv:python3.12.9-bookworm-slim
 
 WORKDIR /app
 
@@ -8,9 +9,10 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 
 
-COPY requirements.txt .
-RUN pip install --use-pep517 --no-cache-dir -r requirements.txt
+COPY uv.lock pyproject.toml main.py /app/
 
-COPY main.py .
+# Install the required packages
+RUN uv sync --frozen --no-cache
 
-CMD ["python", "main.py"]
+# Run the discord bot
+CMD ["uv", "run", "main.py"]
