@@ -1,3 +1,6 @@
+import sys
+print(sys.executable)
+
 from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO
 from json import load
@@ -26,8 +29,6 @@ from psutil import virtual_memory
 from pyheif import read as pyheif_read
 from requests import get, head
 
-import sys
-print(sys.executable)
 
 intents = Intents.default()
 intents.message_content = True
