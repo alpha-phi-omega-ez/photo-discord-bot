@@ -15,4 +15,4 @@ COPY uv.lock pyproject.toml main.py /app/
 RUN uv sync --frozen --no-cache
 
 # Run the discord bot
-CMD ["uv", "run", "/app/main.py"]
+CMD ["uv", "run", "--venv", "main.py"]
