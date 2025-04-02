@@ -16,4 +16,4 @@ RUN uv sync --frozen --no-cache
 
 
 # Run the discord bot
-CMD ["sh", "-c", "uv run main.py"]
+CMD ["uv", "run", "main.py"]
