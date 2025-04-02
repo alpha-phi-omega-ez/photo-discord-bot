@@ -12,8 +12,8 @@ RUN apt-get update && \
 COPY uv.lock pyproject.toml main.py /app/
 
 # Install the required packages
-RUN uv sync --frozen --no-cache --system
+RUN uv sync --frozen --no-cache
 
 
 # Run the discord bot
-CMD ["uv", "run", "main.py"]
+CMD ["uv", "run", "--venv", ".venv", "main.py"]
