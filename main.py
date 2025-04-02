@@ -26,6 +26,9 @@ from psutil import virtual_memory
 from pyheif import read as pyheif_read
 from requests import get, head
 
+import sys
+print(sys.executable)
+
 intents = Intents.default()
 intents.message_content = True
 intents.guilds = True
