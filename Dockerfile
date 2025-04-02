@@ -14,7 +14,6 @@ COPY uv.lock pyproject.toml main.py /app/
 # Install the required packages
 RUN uv sync --frozen --no-cache
 
-ENV PATH="/app/.venv/bin:$PATH"
 
 # Run the discord bot
-CMD ["uv", "run", "main.py"]
+CMD ["/app/.venv/bin/python", "main.py"]
