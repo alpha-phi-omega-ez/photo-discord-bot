@@ -1,5 +1,5 @@
-# Use the latest uv image with python 3.12.9 and debian
-FROM ghcr.io/astral-sh/uv:python3.12.9-bookworm-slim
+# Use the latest uv image with python 3.12 and debian
+FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim
 
 WORKDIR /app
 
