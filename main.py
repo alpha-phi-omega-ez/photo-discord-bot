@@ -1,6 +1,3 @@
-import sys
-print(sys.executable)
-
 from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO
 from json import load
@@ -28,6 +25,44 @@ from PIL import Image
 from psutil import virtual_memory
 from pyheif import read as pyheif_read
 from requests import get, head
+import sentry_sdk
+from sentry_sdk.integrations.aiohttp import AioHttpIntegration
+from sentry_sdk.integrations.stdlib import StdlibIntegration
+from dotenv import load_dotenv
+from os import getenv
+
+load_dotenv()
+
+sentry_sdk.init(
+    dsn=getenv("SENTRY_DSN", ""),
+    integrations=[
+        AioHttpIntegration(),  # For async HTTP requests
+        StdlibIntegration(),  # For threading-related error tracking
+    ],
+    traces_sample_rate=float(getenv("SENTRY_TRACE_RATE", 1.0)),
+)
+
+DISCORD_TOKEN = getenv("DISCORD_TOKEN")
+PARENT_FOLDER_ID = getenv("PARENT_FOLDER_ID")
+CHANNEL_NAME = getenv("CHANNEL_NAME")
+SHARED_DRIVE_ID = getenv("SHARED_DRIVE_ID")
+GUILD_ID = getenv("GUILD_ID")
+VIDEO_IN_MEMORY = getenv("VIDEO_IN_MEMORY", "False").lower() == "true"
+DELEGATE_EMAIL = getenv("DELEGATE_EMAIL")
+LOGGING = getenv("LOGGING", "INFO").upper()
+
+# Exit if any critical variables are None
+if not all([DISCORD_TOKEN, PARENT_FOLDER_ID, CHANNEL_NAME, SHARED_DRIVE_ID, GUILD_ID, DELEGATE_EMAIL]):
+    missing_vars = [var for var, value in {
+        "DISCORD_TOKEN": DISCORD_TOKEN,
+        "PARENT_FOLDER_ID": PARENT_FOLDER_ID,
+        "CHANNEL_NAME": CHANNEL_NAME,
+        "SHARED_DRIVE_ID": SHARED_DRIVE_ID,
+        "GUILD_ID": GUILD_ID,
+        "DELEGATE_EMAIL": DELEGATE_EMAIL,
+    }.items() if not value]
+    print("Missing environment variables:", ", ".join(missing_vars))
+    exit(1)
 
 
 intents = Intents.default()
@@ -35,10 +70,6 @@ intents.message_content = True
 intents.guilds = True
 intents.message_content = True
 
-CONFIG = {}
-
-SHARED_DRIVE_ID = ""
-FOLDER_ID = ""
 GUILD = None
 
 IMAGE_EXTENSIONS = (
@@ -74,7 +105,7 @@ def setup_logger(logger_setup, log_level=INFO):
     getLogger("discord.http").setLevel(log_level)
     handler = StreamHandler()
     formatter = Formatter(
-        f"\x1b[30;1m%(asctime)s\x1b[0m \x1b[34;1m%(levelname)-8s\x1b[0m \x1b[35m%(name)s\x1b[0m %(message)s",
+        "\x1b[30;1m%(asctime)s\x1b[0m \x1b[34;1m%(levelname)-8s\x1b[0m \x1b[35m%(name)s\x1b[0m %(message)s",
         "%Y-%m-%d %H:%M:%S",
     )
     handler.setFormatter(formatter)
@@ -129,7 +160,7 @@ def authenticate_google_drive() -> Any:
     creds = Credentials.from_service_account_file(
         "config/service-credentials.json", scopes=SCOPES
     )
-    delegated_creds = creds.with_subject(CONFIG["DELEGATE_EMAIL"])
+    delegated_creds = creds.with_subject(DELEGATE_EMAIL)
 
     logger.info("creating google cloud service")
     service = build("drive", "v3", credentials=delegated_creds)
@@ -146,7 +177,7 @@ def check_folder_exists(folder_name) -> str | None:
                 response = (
                     SERVICE.files()
                     .list(
-                        q=f"'{FOLDER_ID}' in parents and name='{folder_name}'",  # Query to filter by folder parent
+                        q=f"'{PARENT_FOLDER_ID}' in parents and name='{folder_name}'",  # Query to filter by folder parent
                         corpora="drive",
                         driveId=SHARED_DRIVE_ID,
                         includeItemsFromAllDrives=True,
@@ -170,7 +201,6 @@ def check_folder_exists(folder_name) -> str | None:
 
 
 def create_folder(folder_name) -> str | None:
-
     try:
         if not SERVICE:
             raise Exception("Google Drive service not authenticated")
@@ -179,7 +209,7 @@ def create_folder(folder_name) -> str | None:
         folder_metadata = {
             "name": folder_name,
             "mimeType": "application/vnd.google-apps.folder",
-            "parents": [FOLDER_ID],  # Set the parent folder in the shared drive
+            "parents": [PARENT_FOLDER_ID],  # Set the parent folder in the shared drive
         }
 
         for _ in range(3):
@@ -239,7 +269,6 @@ def convert_to_jpeg(image_data, file_name, extension):
 def upload(
     folder_id, stream_data, file_name, extension, thread_name, file_type, file_path=None
 ) -> None:
-
     try:
         if not SERVICE:
             raise Exception("Google Drive service not authenticated")
@@ -338,7 +367,6 @@ def download_image(url, file_name, folder_id, extension, thread_name) -> None:
 
 def download_video(folder_id, url, file_name, extension, thread_name) -> None:
     try:
-
         logger.debug(f"Downloading video from {url}")
 
         for _ in range(3):
@@ -352,11 +380,10 @@ def download_video(folder_id, url, file_name, extension, thread_name) -> None:
 
                 if response.status_code == 200:
                     if (
-                        CONFIG["VIDEO_IN_MEMORY"]
+                        VIDEO_IN_MEMORY
                         and file_size
                         and is_memory_available(file_size)
                     ):
-
                         logger.debug(f"Downloading video from {url} to memory")
 
                         # Use BytesIO as an in-memory file to store the download stream
@@ -381,7 +408,6 @@ def download_video(folder_id, url, file_name, extension, thread_name) -> None:
                         return
 
                     else:
-
                         logger.debug(f"Downloading video from {url} to disk")
 
                         # Create a temporary file with 'wb+' mode to read/write binary
@@ -436,7 +462,6 @@ def find_file_name(pattern, url) -> str | None:
 
 
 def queue_file_downloads(thread_name, attachments, folder_id=None) -> None:
-
     try:
         thread_name = thread_name.replace("'", "\x27")
         logger.debug(f"Thread Name: {thread_name}")
@@ -456,7 +481,6 @@ def queue_file_downloads(thread_name, attachments, folder_id=None) -> None:
             url_lower = attachment.url.lower()
 
             if any(ext in url_lower for ext in IMAGE_EXTENSIONS):
-
                 logger.debug(f"Found image attachment: {attachment.url}")
 
                 file_name = find_file_name(IMAGE_NAME_PATTERN, url_lower)
@@ -532,7 +556,10 @@ async def on_ready() -> None:
     await bot.tree.sync()
 
     global GUILD
-    GUILD = bot.get_guild(int(CONFIG["GUILD_ID"]))
+    if GUILD_ID is None:
+        logger.error("GUILD_ID is not set. Exiting.")
+        exit(1)
+    GUILD = bot.get_guild(int(GUILD_ID))
     logger.debug(f"Guild: {GUILD}")
     if not GUILD:
         logger.error("Failed to find guild")
@@ -543,8 +570,7 @@ async def on_ready() -> None:
 
 @bot.event
 async def on_message(message: message.Message) -> None:
-
-    if isinstance(message.channel, Thread) and CONFIG["CHANNEL_NAME"] == str(
+    if isinstance(message.channel, Thread) and CHANNEL_NAME == str(
         message.channel.parent
     ):
         logger.debug(f"Recieved message: {message.content}")
@@ -627,12 +653,12 @@ async def read_message(
             except ValueError as e:
                 logger.info(f"Given message id was not an integer: {e}")
                 await interaction.followup.send(
-                    f"Given ID was not an integer",
+                    "Given ID was not an integer",
                     ephemeral=True,
                 )
                 return
         await interaction.followup.send(
-            f"Message could not be found by the bot, check that the bot has permission to view the channel the message is in",
+            "Message could not be found by the bot, check that the bot has permission to view the channel the message is in",
             ephemeral=True,
         )
         logger.info("Message not found in any accessible channels.")
@@ -645,16 +671,7 @@ async def read_message(
 
 
 if __name__ == "__main__":
-    with open("config/config.json", "r") as config_file:
-        CONFIG = load(config_file)
-
-    setup_logger(logger, CONFIG.get("LOGGING", "INFO").upper())
-    logger.debug(f"Loaded config: {CONFIG}")
-
-    validate_config(CONFIG)
-
-    SHARED_DRIVE_ID = CONFIG["SHARED_DRIVE_ID"]
-    FOLDER_ID = CONFIG["PARENT_FOLDER_ID"]
+    setup_logger(logger, getattr(INFO, LOGGING, INFO))
 
     SERVICE = authenticate_google_drive()
 
@@ -662,4 +679,8 @@ if __name__ == "__main__":
         print("Failed to authenticate Google Drive service")
         exit(1)
 
-    bot.run(CONFIG["DISCORD_TOKEN"])
+    if DISCORD_TOKEN:
+        bot.run(DISCORD_TOKEN)
+    else:
+        logger.error("DISCORD_TOKEN is not set. Exiting.")
+        exit(1)
