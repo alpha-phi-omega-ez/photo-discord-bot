@@ -124,24 +124,6 @@ def setup_logger(logger_setup, log_level=INFO):
     logger_setup.addHandler(handler)
 
 
-def validate_config(config) -> None:
-    """Validate the configuration file to ensure all required keys are present"""
-    if any(
-        key not in config
-        for key in (
-            "DISCORD_TOKEN",
-            "PARENT_FOLDER_ID",
-            "CHANNEL_NAME",
-            "SHARED_DRIVE_ID",
-            "GUILD_ID",
-            "VIDEO_IN_MEMORY",
-            "DELEGATE_EMAIL",
-        )
-    ):
-        logger.error("Missing required configuration keys")
-        exit(1)
-
-
 def get_file_size(url) -> int | None:
     """Returns the file size in bytes from a URL."""
     try:
