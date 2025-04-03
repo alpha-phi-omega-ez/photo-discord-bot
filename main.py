@@ -1,6 +1,5 @@
 from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO
-from json import load
 from logging import INFO, Formatter, StreamHandler, getLogger
 from os import unlink
 from re import compile as re_compile
@@ -52,15 +51,28 @@ DELEGATE_EMAIL = getenv("DELEGATE_EMAIL")
 LOGGING = getenv("LOGGING", "INFO").upper()
 
 # Exit if any critical variables are None
-if not all([DISCORD_TOKEN, PARENT_FOLDER_ID, CHANNEL_NAME, SHARED_DRIVE_ID, GUILD_ID, DELEGATE_EMAIL]):
-    missing_vars = [var for var, value in {
-        "DISCORD_TOKEN": DISCORD_TOKEN,
-        "PARENT_FOLDER_ID": PARENT_FOLDER_ID,
-        "CHANNEL_NAME": CHANNEL_NAME,
-        "SHARED_DRIVE_ID": SHARED_DRIVE_ID,
-        "GUILD_ID": GUILD_ID,
-        "DELEGATE_EMAIL": DELEGATE_EMAIL,
-    }.items() if not value]
+if not all(
+    [
+        DISCORD_TOKEN,
+        PARENT_FOLDER_ID,
+        CHANNEL_NAME,
+        SHARED_DRIVE_ID,
+        GUILD_ID,
+        DELEGATE_EMAIL,
+    ]
+):
+    missing_vars = [
+        var
+        for var, value in {
+            "DISCORD_TOKEN": DISCORD_TOKEN,
+            "PARENT_FOLDER_ID": PARENT_FOLDER_ID,
+            "CHANNEL_NAME": CHANNEL_NAME,
+            "SHARED_DRIVE_ID": SHARED_DRIVE_ID,
+            "GUILD_ID": GUILD_ID,
+            "DELEGATE_EMAIL": DELEGATE_EMAIL,
+        }.items()
+        if not value
+    ]
     print("Missing environment variables:", ", ".join(missing_vars))
     exit(1)
 
@@ -379,11 +391,7 @@ def download_video(folder_id, url, file_name, extension, thread_name) -> None:
                 logger.debug(f"Response {url}: {response.status_code}")
 
                 if response.status_code == 200:
-                    if (
-                        VIDEO_IN_MEMORY
-                        and file_size
-                        and is_memory_available(file_size)
-                    ):
+                    if VIDEO_IN_MEMORY and file_size and is_memory_available(file_size):
                         logger.debug(f"Downloading video from {url} to memory")
 
                         # Use BytesIO as an in-memory file to store the download stream
