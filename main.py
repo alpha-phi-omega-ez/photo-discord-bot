@@ -48,7 +48,7 @@ SHARED_DRIVE_ID = getenv("SHARED_DRIVE_ID")
 GUILD_ID = getenv("GUILD_ID")
 VIDEO_IN_MEMORY = getenv("VIDEO_IN_MEMORY", "False").lower() == "true"
 DELEGATE_EMAIL = getenv("DELEGATE_EMAIL")
-LOGGING = getenv("LOGGING", "INFO").upper()
+LOG_LEVEL = getenv("LOG_LEVEL", "INFO").upper()
 
 # Exit if any critical variables are None
 if not all(
@@ -661,7 +661,7 @@ async def read_message(
 
 
 if __name__ == "__main__":
-    setup_logger(logger, getattr(INFO, LOGGING, INFO))
+    setup_logger(logger, getattr(INFO, LOG_LEVEL, INFO))
 
     SERVICE = authenticate_google_drive()
 
