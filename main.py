@@ -15,6 +15,7 @@ from discord import (
     Thread,
     app_commands,
     message,
+    utils,
 )
 from discord.ext import commands
 from google.oauth2.service_account import Credentials
@@ -30,8 +31,10 @@ from sentry_sdk.integrations.stdlib import StdlibIntegration
 from dotenv import load_dotenv
 from os import getenv
 
+# Load environment variables from .env file
 load_dotenv()
 
+# Setup Sentry
 sentry_sdk.init(
     dsn=getenv("SENTRY_DSN", ""),
     integrations=[
@@ -41,6 +44,7 @@ sentry_sdk.init(
     traces_sample_rate=float(getenv("SENTRY_TRACE_RATE", 1.0)),
 )
 
+# Environment variables
 DISCORD_TOKEN = getenv("DISCORD_TOKEN")
 PARENT_FOLDER_ID = getenv("PARENT_FOLDER_ID")
 CHANNEL_NAME = getenv("CHANNEL_NAME")
@@ -77,6 +81,7 @@ if not all(
     exit(1)
 
 
+# Setup Discord intents
 intents = Intents.default()
 intents.message_content = True
 intents.guilds = True
@@ -84,6 +89,7 @@ intents.message_content = True
 
 GUILD = None
 
+# Global variables
 IMAGE_EXTENSIONS = (
     ".png",
     ".jpg",
@@ -99,10 +105,10 @@ SCOPES = [
 IMAGE_NAME_PATTERN = re_compile(r"([\w]+\.(?:png|jpg|jpeg|heic|heif))")
 VIDEO_NAME_PATTERN = re_compile(r"([\w]+\.(?:mp4|mov|avi|mkv))")
 
-# google service
+# Google service
 SERVICE = None
 
-# discord commands bot
+# Discord commands bot
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 # Create a thread pool for downloading images
@@ -111,7 +117,8 @@ EXECUTOR = ThreadPoolExecutor(max_workers=1)
 logger = getLogger("photo-bot")
 
 
-def setup_logger(logger_setup, log_level=INFO):
+def setup_logger(logger_setup, log_level=INFO) -> None:
+    """Setup logger for the bot."""
     logger_setup.setLevel(log_level)
 
     getLogger("discord.http").setLevel(log_level)
@@ -157,7 +164,10 @@ def authenticate_google_drive() -> Any:
     delegated_creds = creds.with_subject(DELEGATE_EMAIL)
 
     logger.info("creating google cloud service")
+
+    # Create the Google Drive API service
     service = build("drive", "v3", credentials=delegated_creds)
+
     return service
 
 
@@ -166,8 +176,12 @@ def check_folder_exists(folder_name) -> str | None:
         if not SERVICE:
             raise Exception("Google Drive service not authenticated")
 
+        logger.debug(f"Searching for folder: {folder_name}")
+
         for _ in range(3):
             try:
+                # Search for the folder in the specified shared drive
+                # using the folder name and parent folder ID
                 response = (
                     SERVICE.files()
                     .list(
@@ -184,6 +198,7 @@ def check_folder_exists(folder_name) -> str | None:
                 logger.debug(f"Failed to find folder: {e}")
                 sleep(1)
 
+        # Check if the folder exists in the response
         folders = response.get("files", [])
         if folders:
             return folders[0].get("id")
@@ -206,9 +221,11 @@ def create_folder(folder_name) -> str | None:
             "parents": [PARENT_FOLDER_ID],  # Set the parent folder in the shared drive
         }
 
+        logger.debug(f"Creating folder: {folder_name}")
+
         for _ in range(3):
-            # Create the new folder in the specified shared drive folder
             try:
+                # Create the new folder in the specified shared drive folder
                 new_folder = (
                     SERVICE.files()
                     .create(
@@ -247,6 +264,7 @@ def convert_to_jpeg(image_data, file_name, extension):
             heif_file.stride,
         )
 
+        # Save the image to a BytesIO object in JPEG format
         img_bytes = BytesIO()
         image.save(img_bytes, format="JPEG")
         new_image_data = img_bytes.getvalue()
@@ -254,6 +272,7 @@ def convert_to_jpeg(image_data, file_name, extension):
         new_file_name = file_name.replace("heic", "jpeg")
 
         logger.debug("Converted HEIC/HEIF image")
+
         return new_image_data, new_file_name, new_extension
     except Exception as e:
         logger.debug(f"Failed to convert HEIC/HEIF image: {e}")
@@ -266,6 +285,7 @@ def upload(
     try:
         if not SERVICE:
             raise Exception("Google Drive service not authenticated")
+        
         # Define metadata for the new file
         file_metadata = {
             "name": file_name.upper(),
@@ -277,6 +297,7 @@ def upload(
 
         media = None
 
+        # Determine the MIME type based on the file type
         if stream_data:
             media = MediaIoBaseUpload(
                 stream_data, mimetype=f"{file_type}/{extension}", resumable=True
@@ -289,7 +310,7 @@ def upload(
         if media:
             for _ in range(3):
                 try:
-                    # Upload the file
+                    # Upload the file to Google drive
                     uploaded_file = (
                         SERVICE.files()
                         .create(
@@ -308,6 +329,7 @@ def upload(
             logger.error("No media data to upload")
             return
 
+        # Check if the upload was successful
         if uploaded_file:
             logger.info(
                 f"Uploaded {file_name} to {thread_name}, File ID: {uploaded_file.get('id')}"
@@ -324,19 +346,23 @@ def download_image(url, file_name, folder_id, extension, thread_name) -> None:
         logger.debug(f"Downloading image from {url}")
         for _ in range(3):
             try:
+                # Request the image data
                 response = get(url)
                 logger.debug(f"Response {url}: {response.status_code}")
 
                 if response.status_code == 200:
+                    # Get the image data
                     image_data = response.content
 
                     logger.debug(f"Downloaded image from {url}")
 
+                    # Check if the image is HEIC/HEIF and convert to JPEG
                     if "heic" == extension or "heif" == extension:
                         image_data, file_name, extension = convert_to_jpeg(
                             image_data, file_name, extension
                         )
 
+                    # Use BytesIO as an in-memory file to store the download stream
                     image_data_bytes = BytesIO(image_data)
 
                     upload(
@@ -365,20 +391,26 @@ def download_video(folder_id, url, file_name, extension, thread_name) -> None:
 
         for _ in range(3):
             try:
+                # Get the file size from the URL
                 file_size = get_file_size(url)
 
                 logger.debug(f"File size: {file_size}")
 
+                # Request the video data
                 response = get(url, stream=True)
                 logger.debug(f"Response {url}: {response.status_code}")
 
                 if response.status_code == 200:
+                    logger.debug(f"Downloaded video from {url}")
+
+                    # Check if the file size is available and if memory is available
                     if VIDEO_IN_MEMORY and file_size and is_memory_available(file_size):
                         logger.debug(f"Downloading video from {url} to memory")
 
                         # Use BytesIO as an in-memory file to store the download stream
                         video_stream = BytesIO()
 
+                        # Write the video content to the stream in chunks
                         for chunk in response.iter_content(chunk_size=8192):
                             video_stream.write(chunk)
 
@@ -397,6 +429,7 @@ def download_video(folder_id, url, file_name, extension, thread_name) -> None:
                         )
                         return
 
+                    # If not enough memory, download to disk
                     else:
                         logger.debug(f"Downloading video from {url} to disk")
 
@@ -418,6 +451,7 @@ def download_video(folder_id, url, file_name, extension, thread_name) -> None:
 
                         if temp_file:
                             try:
+                                # Upload the video file from the temp file
                                 upload(
                                     folder_id,
                                     None,
@@ -444,6 +478,7 @@ def download_video(folder_id, url, file_name, extension, thread_name) -> None:
 
 
 def find_file_name(pattern, url) -> str | None:
+    """Find the file name from the URL using regex pattern."""
     try:
         return pattern.findall(url)[0].replace(" ", "_").replace("'", "\x27")
     except Exception as e:
@@ -452,10 +487,12 @@ def find_file_name(pattern, url) -> str | None:
 
 
 def queue_file_downloads(thread_name, attachments, folder_id=None) -> None:
+    """Queue the file downloads for images and videos."""
     try:
         thread_name = thread_name.replace("'", "\x27")
         logger.debug(f"Thread Name: {thread_name}")
 
+        # Check if the folder ID is provided, if not, check if it exists
         if folder_id is None:
             folder_id = check_folder_exists(thread_name)
             if folder_id is None:
@@ -467,9 +504,13 @@ def queue_file_downloads(thread_name, attachments, folder_id=None) -> None:
             logger.debug("Missing folder ID")
             return
 
+        # Iterate through the attachments
         for attachment in attachments:
             url_lower = attachment.url.lower()
 
+            logger.debug(f"Attachment URL: {attachment.url}")
+
+            # Check if the URL contains image or video extensions
             if any(ext in url_lower for ext in IMAGE_EXTENSIONS):
                 logger.debug(f"Found image attachment: {attachment.url}")
 
@@ -491,6 +532,7 @@ def queue_file_downloads(thread_name, attachments, folder_id=None) -> None:
                     thread_name,
                 )
 
+            # Check if the URL contains video extensions
             elif any(ext in url_lower for ext in VIDEO_EXTENSIONS):
                 logger.debug(f"Found video attachment: {attachment.url}")
 
@@ -519,7 +561,8 @@ def queue_file_downloads(thread_name, attachments, folder_id=None) -> None:
         logger.error(f"Failed to queue image download: {e}")
 
 
-async def process_message(message, thread_name=None, folder_id=None):
+async def process_message(message, thread_name=None, folder_id=None) -> None:
+    """Process the message and download images/videos."""
     if "no upload" not in message.content.lower() and message.attachments:
         logger.debug(f"Recieved attachments: {message.attachments}")
         if not thread_name:
@@ -529,28 +572,33 @@ async def process_message(message, thread_name=None, folder_id=None):
         EXECUTOR.submit(
             queue_file_downloads, thread_name, message.attachments, folder_id
         )
-        await message.add_reaction("👍")
 
-        # if message.guild is not None:
-        #     emoji = utils.get(message.guild.emojis, name="glump_photo")
-        #     if emoji:
-        #         await message.add_reaction(emoji)
-        #     else:
-        #         await message.add_reaction("👍")
-        # else:
-        #     await message.add_reaction("👍")
+        # Add a reaction to the message
+        if message.guild is not None:
+            emoji = utils.get(message.guild.emojis, name="glump_photo")
+            if emoji:
+                await message.add_reaction(emoji)
+            else:
+                await message.add_reaction("👍")
+        else:
+            await message.add_reaction("👍")
 
 
 @bot.event
 async def on_ready() -> None:
+    """Event triggered when the bot is ready."""
     await bot.tree.sync()
 
     global GUILD
     if GUILD_ID is None:
         logger.error("GUILD_ID is not set. Exiting.")
         exit(1)
+
+    # Get the guild (server) where the bot is running
     GUILD = bot.get_guild(int(GUILD_ID))
+    
     logger.debug(f"Guild: {GUILD}")
+    
     if not GUILD:
         logger.error("Failed to find guild")
         exit(1)
@@ -560,6 +608,7 @@ async def on_ready() -> None:
 
 @bot.event
 async def on_message(message: message.Message) -> None:
+    """Event triggered when a message is sent in a channel."""
     if isinstance(message.channel, Thread) and CHANNEL_NAME == str(
         message.channel.parent
     ):
@@ -574,11 +623,16 @@ async def on_message(message: message.Message) -> None:
 )
 @app_commands.describe(thread_id="The ID of the thread to read messages from")
 async def read_thread(interaction: Interaction, thread_id: str) -> None:
+    """Read all messages in a specific thread to upload photos."""
     try:
-        await interaction.response.defer(ephemeral=True)  # Defer the initial response
+        # Defer the initial response, alter discord to show that the bot is "thinking/processing"
+        await interaction.response.defer(ephemeral=True)
+
         logger.info(f"Reading thread command called with ID: {thread_id}")
+
         # Fetch the thread using the provided thread ID
         thread = await bot.fetch_channel(int(thread_id))
+
         logger.debug(f"Thread: {thread}")
 
         # Check if the channel is a thread
@@ -593,16 +647,20 @@ async def read_thread(interaction: Interaction, thread_id: str) -> None:
                 logger.debug(f"Message: {message}")
                 await process_message(message)
         else:
+            # If the channel is not a thread, send an error message
             await interaction.followup.send(
                 "The provided ID does not correspond to a thread.", ephemeral=True
             )
     except NotFound:
+        # If the thread is not found, send an error message
         await interaction.followup.send(
             "Thread not found. Please check the thread ID.", ephemeral=True
         )
         logger.info(f"Thread not found {thread_id}")
     except Exception as e:
         logger.error(f"An error occurred: {e}")
+
+        # If any other error occurs, send an error message
         if not interaction.response.is_done():
             await interaction.followup.send("An error occurred", ephemeral=True)
 
@@ -617,16 +675,24 @@ async def read_thread(interaction: Interaction, thread_id: str) -> None:
 async def read_message(
     interaction: Interaction, message_id: str, folder_name: str
 ) -> None:
+    """Upload all attachments of a specific message."""
     try:
-        await interaction.response.defer(ephemeral=True)  # Defer the initial response
+        # Defer the initial response, alter discord to show that the bot is "thinking/processing"
+        await interaction.response.defer(ephemeral=True)
+
         logger.info(f"Reading message command called with ID: {message_id}")
+
         if not GUILD:
             raise Exception("Guild not found")
         for channel in GUILD.text_channels:
             try:
+                # Check if the bot has permission to read the channel
                 message = await channel.fetch_message(int(message_id))
                 logger.debug(f"Message found in channel {channel.name}: {message}")
+
                 await process_message(message, thread_name=folder_name)
+                
+                # Respond to the interaction with a message
                 await interaction.followup.send(
                     f"Photo/Videos being uploaded to {folder_name}",
                     ephemeral=True,
@@ -642,11 +708,15 @@ async def read_message(
                 continue  # Bot doesn't have permission to read this channel
             except ValueError as e:
                 logger.info(f"Given message id was not an integer: {e}")
+
+                # If the message ID is not an integer, send an error message
                 await interaction.followup.send(
                     "Given ID was not an integer",
                     ephemeral=True,
                 )
                 return
+        
+        # If the message was not found in any channel, send an error message
         await interaction.followup.send(
             "Message could not be found by the bot, check that the bot has permission to view the channel the message is in",
             ephemeral=True,
@@ -654,6 +724,8 @@ async def read_message(
         logger.info("Message not found in any accessible channels.")
     except Exception as e:
         logger.error(f"An error occurred: {e}")
+
+        # If any other error occurs, send an error message
         if not interaction.response.is_done():
             await interaction.followup.send(
                 "An error occurred contact administrator", ephemeral=True
@@ -663,6 +735,7 @@ async def read_message(
 if __name__ == "__main__":
     setup_logger(logger, getattr(INFO, LOG_LEVEL, INFO))
 
+    # Authenticate Google Drive service
     SERVICE = authenticate_google_drive()
 
     if not SERVICE:
@@ -670,6 +743,7 @@ if __name__ == "__main__":
         exit(1)
 
     if DISCORD_TOKEN:
+        # Start the bot
         bot.run(DISCORD_TOKEN)
     else:
         logger.error("DISCORD_TOKEN is not set. Exiting.")
