@@ -16,6 +16,7 @@ from discord import (
     app_commands,
     message,
     utils,
+    errors,
 )
 from discord.ext import commands
 from google.oauth2.service_account import Credentials
@@ -575,10 +576,10 @@ async def process_message(message, thread_name=None, folder_id=None) -> None:
 
         # Add a reaction to the message
         if message.guild is not None:
-            emoji = utils.get(message.guild.emojis, name="glump_photo")
-            if emoji:
-                await message.add_reaction(emoji)
-            else:
+            try:
+                await message.add_reaction(utils.get(message.guild.emojis, name="glump_photo"))
+            except errors.HTTPException as e:
+                logger.debug(f"Failed to add reaction: {e}")
                 await message.add_reaction("👍")
         else:
             await message.add_reaction("👍")
