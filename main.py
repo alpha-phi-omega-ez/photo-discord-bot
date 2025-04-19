@@ -1,12 +1,13 @@
 from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO
 from logging import INFO, Formatter, StreamHandler, getLogger
-from os import unlink
+from os import getenv, unlink
 from re import compile as re_compile
 from tempfile import NamedTemporaryFile
 from time import sleep
 from typing import Any
 
+import sentry_sdk
 from discord import (
     Forbidden,
     Intents,
@@ -14,11 +15,12 @@ from discord import (
     NotFound,
     Thread,
     app_commands,
+    errors,
     message,
     utils,
-    errors,
 )
 from discord.ext import commands
+from dotenv import load_dotenv
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload, MediaIoBaseUpload
@@ -26,11 +28,8 @@ from PIL import Image
 from psutil import virtual_memory
 from pyheif import read as pyheif_read
 from requests import get, head
-import sentry_sdk
 from sentry_sdk.integrations.aiohttp import AioHttpIntegration
 from sentry_sdk.integrations.stdlib import StdlibIntegration
-from dotenv import load_dotenv
-from os import getenv
 
 # Load environment variables from .env file
 load_dotenv()
@@ -125,7 +124,11 @@ def setup_logger(logger_setup, log_level=INFO) -> None:
     getLogger("discord.http").setLevel(log_level)
     handler = StreamHandler()
     formatter = Formatter(
-        "\x1b[30;1m%(asctime)s\x1b[0m \x1b[34;1m%(levelname)-8s\x1b[0m \x1b[35m%(name)s\x1b[0m %(message)s",
+        (
+            "\x1b[30;1m%(asctime)s\x1b[0m "
+            "\x1b[34;1m%(levelname)-8s\x1b[0m "
+            "\x1b[35m%(name)s\x1b[0m %(message)s"
+        ),
         "%Y-%m-%d %H:%M:%S",
     )
     handler.setFormatter(formatter)
@@ -186,7 +189,8 @@ def check_folder_exists(folder_name) -> str | None:
                 response = (
                     SERVICE.files()
                     .list(
-                        q=f"'{PARENT_FOLDER_ID}' in parents and name='{folder_name}'",  # Query to filter by folder parent
+                        # Query to filter by folder parent ID and name
+                        q=f"'{PARENT_FOLDER_ID}' in parents and name='{folder_name}'",
                         corpora="drive",
                         driveId=SHARED_DRIVE_ID,
                         includeItemsFromAllDrives=True,
@@ -317,7 +321,8 @@ def upload(
                         .create(
                             body=file_metadata,
                             media_body=media,
-                            supportsAllDrives=True,  # Ensures compatibility with shared drives
+                            # Ensures compatibility with shared drives
+                            supportsAllDrives=True,
                             fields="id, name",
                         )
                         .execute()
@@ -333,7 +338,8 @@ def upload(
         # Check if the upload was successful
         if uploaded_file:
             logger.info(
-                f"Uploaded {file_name} to {thread_name}, File ID: {uploaded_file.get('id')}"
+                f"Uploaded {file_name} to {thread_name}, "
+                "File ID: {uploaded_file.get('id')}"
             )
         else:
             logger.warning(f"Failed to upload image: {file_name.upper()}")
@@ -577,7 +583,9 @@ async def process_message(message, thread_name=None, folder_id=None) -> None:
         # Add a reaction to the message
         if message.guild is not None:
             try:
-                await message.add_reaction(utils.get(message.guild.emojis, name="glump_photo"))
+                await message.add_reaction(
+                    utils.get(message.guild.emojis, name="glump_photo")
+                )
             except errors.HTTPException as e:
                 logger.debug(f"Failed to add reaction: {e}")
                 await message.add_reaction("👍")
@@ -626,7 +634,8 @@ async def on_message(message: message.Message) -> None:
 async def read_thread(interaction: Interaction, thread_id: str) -> None:
     """Read all messages in a specific thread to upload photos."""
     try:
-        # Defer the initial response, alter discord to show that the bot is "thinking/processing"
+        # Defer the initial response, alter discord to show that
+        # the bot is "thinking/processing"
         await interaction.response.defer(ephemeral=True)
 
         logger.info(f"Reading thread command called with ID: {thread_id}")
@@ -678,7 +687,8 @@ async def read_message(
 ) -> None:
     """Upload all attachments of a specific message."""
     try:
-        # Defer the initial response, alter discord to show that the bot is "thinking/processing"
+        # Defer the initial response, alter discord to show that
+        # the bot is "thinking/processing"
         await interaction.response.defer(ephemeral=True)
 
         logger.info(f"Reading message command called with ID: {message_id}")
@@ -719,7 +729,8 @@ async def read_message(
         
         # If the message was not found in any channel, send an error message
         await interaction.followup.send(
-            "Message could not be found by the bot, check that the bot has permission to view the channel the message is in",
+            "Message could not be found by the bot, check that the bot has" \
+            "permission to view the channel the message is in",
             ephemeral=True,
         )
         logger.info("Message not found in any accessible channels.")
