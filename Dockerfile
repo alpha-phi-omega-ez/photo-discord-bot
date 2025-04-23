@@ -5,7 +5,7 @@ WORKDIR /app
 
 # Install dependencies
 RUN apt-get update && \
-    apt-get install -y libheif-dev libde265-dev && \
+    apt-get install -y gcc libheif-dev libde265-dev && \
     rm -rf /var/lib/apt/lists/*
 
 
