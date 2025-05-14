@@ -655,7 +655,11 @@ async def read_thread(interaction: Interaction, thread_id: str) -> None:
             # Read and display all messages in the thread
             async for message in thread.history(limit=None):
                 logger.debug(f"Message: {message}")
-                await process_message(message)
+                # Check if the bot has already reacted to the message
+                if not any(
+                    reaction.me for reaction in message.reactions
+                ):
+                    await process_message(message)
         else:
             # If the channel is not a thread, send an error message
             await interaction.followup.send(
