@@ -705,13 +705,16 @@ async def read_message(
                 message = await channel.fetch_message(int(message_id))
                 logger.debug(f"Message found in channel {channel.name}: {message}")
 
-                await process_message(message, thread_name=folder_name)
-                
-                # Respond to the interaction with a message
-                await interaction.followup.send(
-                    f"Photo/Videos being uploaded to {folder_name}",
-                    ephemeral=True,
-                )
+                if not any(
+                    reaction.me for reaction in message.reactions
+                ):
+                    await process_message(message, thread_name=folder_name)
+                    
+                    # Respond to the interaction with a message
+                    await interaction.followup.send(
+                        f"Photo/Videos being uploaded to {folder_name}",
+                        ephemeral=True,
+                    )
                 return
             except NotFound:
                 logger.debug(f"Message not found in channel {channel.name}")
