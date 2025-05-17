@@ -62,7 +62,6 @@ if os.path.exists(parent_folder_file):
     print("Reading parent folder ID from file")
     with open(parent_folder_file, "r") as f:
         PARENT_FOLDER_ID = f.read().strip()
-        print(PARENT_FOLDER_ID)
 else:
     print("No parent folder ID file found, using environment variable")
     PARENT_FOLDER_ID = getenv("PARENT_FOLDER_ID")
@@ -653,7 +652,6 @@ async def on_message(message: message.Message) -> None:
     if isinstance(message.channel, Thread) and CHANNEL_NAME == str(
         message.channel.parent
     ):
-        print(PARENT_FOLDER_ID)
         logger.debug(f"Recieved message: {message.content}")
         await process_message(message)
 
@@ -876,7 +874,7 @@ if __name__ == "__main__":
     SERVICE = authenticate_google_drive()
 
     if not SERVICE:
-        print("Failed to authenticate Google Drive service")
+        logger.error("Failed to authenticate Google Drive service")
         exit(1)
 
     if DISCORD_TOKEN:
