@@ -1,17 +1,20 @@
+import os
 from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO
-from logging import INFO, Formatter, StreamHandler, getLogger
+from logging import INFO, Formatter, Logger, StreamHandler, getLogger
 from os import getenv, unlink
 from re import compile as re_compile
 from tempfile import NamedTemporaryFile
 from time import sleep
 from typing import Any
 
+import aiofiles
 import sentry_sdk
 from discord import (
     Forbidden,
     Intents,
     Interaction,
+    Member,
     NotFound,
     Thread,
     app_commands,
@@ -44,15 +47,25 @@ sentry_sdk.init(
     traces_sample_rate=float(getenv("SENTRY_TRACE_RATE", 1.0)),
 )
 
-# Environment variables
+# Program variables
 DISCORD_TOKEN = getenv("DISCORD_TOKEN")
-PARENT_FOLDER_ID = getenv("PARENT_FOLDER_ID")
 CHANNEL_NAME = getenv("CHANNEL_NAME")
 SHARED_DRIVE_ID = getenv("SHARED_DRIVE_ID")
 GUILD_ID = getenv("GUILD_ID")
 VIDEO_IN_MEMORY = getenv("VIDEO_IN_MEMORY", "False").lower() == "true"
 DELEGATE_EMAIL = getenv("DELEGATE_EMAIL")
 LOG_LEVEL = getenv("LOG_LEVEL", "INFO").upper()
+ROLE_NAME = getenv("ROLE_NAME")
+PARENT_FOLDER_ID = None
+parent_folder_file = "config/parent_folder_id.txt"
+if os.path.exists(parent_folder_file):
+    print("Reading parent folder ID from file")
+    with open(parent_folder_file, "r") as f:
+        PARENT_FOLDER_ID = f.read().strip()
+        print(PARENT_FOLDER_ID)
+else:
+    print("No parent folder ID file found, using environment variable")
+    PARENT_FOLDER_ID = getenv("PARENT_FOLDER_ID")
 
 # Exit if any critical variables are None
 if not all(
@@ -63,6 +76,7 @@ if not all(
         SHARED_DRIVE_ID,
         GUILD_ID,
         DELEGATE_EMAIL,
+        ROLE_NAME,
     ]
 ):
     missing_vars = [
@@ -74,6 +88,7 @@ if not all(
             "SHARED_DRIVE_ID": SHARED_DRIVE_ID,
             "GUILD_ID": GUILD_ID,
             "DELEGATE_EMAIL": DELEGATE_EMAIL,
+            "ROLE_NAME": ROLE_NAME,
         }.items()
         if not value
     ]
@@ -117,7 +132,7 @@ EXECUTOR = ThreadPoolExecutor(max_workers=1)
 logger = getLogger("photo-bot")
 
 
-def setup_logger(logger_setup, log_level=INFO) -> None:
+def setup_logger(logger_setup: Logger, log_level=INFO) -> None:
     """Setup logger for the bot."""
     logger_setup.setLevel(log_level)
 
@@ -135,7 +150,7 @@ def setup_logger(logger_setup, log_level=INFO) -> None:
     logger_setup.addHandler(handler)
 
 
-def get_file_size(url) -> int | None:
+def get_file_size(url: str) -> int | None:
     """Returns the file size in bytes from a URL."""
     try:
         response = head(url)
@@ -150,7 +165,7 @@ def get_file_size(url) -> int | None:
         return None
 
 
-def is_memory_available(file_size) -> bool:
+def is_memory_available(file_size: int) -> bool:
     """Check if enough memory is available for the given file size."""
     available_memory = virtual_memory().available
 
@@ -175,7 +190,24 @@ def authenticate_google_drive() -> Any:
     return service
 
 
-def check_folder_exists(folder_name) -> str | None:
+def check_parent_folder_id(folder_id: str) -> bool:
+    # Verify the folder ID exists in Google Drive
+    try:
+        if not SERVICE:
+            raise Exception("Google Drive service not authenticated")
+        
+        _ = SERVICE.files().get(
+            fileId=folder_id,
+            supportsAllDrives=True,
+            fields="id"
+        ).execute()
+        return True
+    except Exception as e:
+        logger.warning(f"Invalid folder ID provided: {folder_id} - {e}")
+    return False
+
+
+def check_folder_exists(folder_name: str) -> str | None:
     try:
         if not SERVICE:
             raise Exception("Google Drive service not authenticated")
@@ -621,6 +653,7 @@ async def on_message(message: message.Message) -> None:
     if isinstance(message.channel, Thread) and CHANNEL_NAME == str(
         message.channel.parent
     ):
+        print(PARENT_FOLDER_ID)
         logger.debug(f"Recieved message: {message.content}")
         await process_message(message)
 
@@ -745,6 +778,91 @@ async def read_message(
         logger.error(f"An error occurred: {e}")
 
         # If any other error occurs, send an error message
+        if not interaction.response.is_done():
+            await interaction.followup.send(
+                "An error occurred contact administrator", ephemeral=True
+            )
+
+
+@bot.tree.command(
+    name="help", description="Help command to show available commands"
+)
+async def help_message(
+    interaction: Interaction
+) -> None:
+    await interaction.response.send_message(
+        "Commands:\n"
+        "/threadimages <thread_id> - Read all messages in a specific thread to "
+        "upload photos that were not previously uploaded by this bot\n"
+        "/messageimages <message_id> <folder_name> - Upload all attachments of "
+        "a specific message\n"
+        "/changefolder <folder_id> - Change the folder ID of the channel to "
+        "upload images to\n"
+        "/help - Show this help message",
+        ephemeral=True,
+    )
+
+
+@bot.tree.command(
+    name="changefolder",
+    description="Change the folder ID of the channel to upload images to",
+)
+@app_commands.describe(
+    folder_id="The folder ID to upload images to"
+)
+async def change_folder_command(interaction: Interaction, folder_id: str) -> None:
+    """A command that only allows users with a specific role to perform an action."""
+    try:
+        # Check if the user is a guild member and has the required role
+        if isinstance(interaction.user, Member):
+            member = interaction.user
+        elif interaction.guild is not None:
+            member = await interaction.guild.fetch_member(interaction.user.id)
+        else:
+            await interaction.response.send_message(
+                "This command can only be used within a server.",
+                ephemeral=True,
+            )
+            logger.warning(
+                f"User {interaction.user} attempted restricted action outside a guild"
+            )
+            return
+
+        if hasattr(member, "roles"):
+            if any(role.name == ROLE_NAME for role in member.roles):
+                await interaction.response.defer(ephemeral=True)
+
+                if not check_parent_folder_id(folder_id):
+                    await interaction.followup.send(
+                        "Invalid folder ID provided.",
+                        ephemeral=True,
+                    )
+                    return
+                # Update the parent_folder_file with the new folder_id
+                async with aiofiles.open(parent_folder_file, "w") as f:
+                    await f.write(folder_id)
+                global PARENT_FOLDER_ID
+                PARENT_FOLDER_ID = folder_id
+                await interaction.followup.send(
+                    "Folder ID updated successfully!",
+                    ephemeral=True,
+                )
+                logger.info(f"Folder ID changes by {interaction.user}")
+            else:
+                await interaction.response.send_message(
+                    "You do not have the required role to perform this action.",
+                    ephemeral=True,
+                )
+        else:
+            await interaction.response.send_message(
+                "This command can only be used within a server.",
+                ephemeral=True,
+            )
+            logger.warning(
+                f"User {interaction.user} attempted restricted action outside a guild"
+            )
+    except Exception as e:
+        logger.error(f"An error occurred in restricted_action: {e}")
         if not interaction.response.is_done():
             await interaction.followup.send(
                 "An error occurred contact administrator", ephemeral=True
