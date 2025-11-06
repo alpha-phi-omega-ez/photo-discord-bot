@@ -64,20 +64,6 @@ THREAD_POOL_WORKERS = int(getenv("THREAD_POOL_WORKERS", 4))
 MAX_RETRIES = int(getenv("MAX_RETRIES", 3))
 RETRY_BACKOFF_MULTIPLIER = float(getenv("RETRY_BACKOFF_MULTIPLIER", 2.5))
 
-
-def missing_required_env() -> list[str]:
-    required = {
-        "DISCORD_TOKEN": DISCORD_TOKEN,
-        "PARENT_FOLDER_ID": PARENT_FOLDER_ID,
-        "CHANNEL_NAME": CHANNEL_NAME,
-        "SHARED_DRIVE_ID": SHARED_DRIVE_ID,
-        "GUILD_ID": GUILD_ID,
-        "DELEGATE_EMAIL": DELEGATE_EMAIL,
-        "ROLE_NAME": ROLE_NAME,
-    }
-    return [name for name, value in required.items() if not value]
-
-
 PARENT_FOLDER_ID = None
 parent_folder_file = "config/parent_folder_id.txt"
 if path.exists(parent_folder_file):
@@ -136,6 +122,19 @@ http_session = Session()
 # Task tracking for observability
 task_futures: list[Future] = []
 task_lock = threading.Lock()
+
+
+def missing_required_env() -> list[str]:
+    required = {
+        "DISCORD_TOKEN": DISCORD_TOKEN,
+        "PARENT_FOLDER_ID": PARENT_FOLDER_ID,
+        "CHANNEL_NAME": CHANNEL_NAME,
+        "SHARED_DRIVE_ID": SHARED_DRIVE_ID,
+        "GUILD_ID": GUILD_ID,
+        "DELEGATE_EMAIL": DELEGATE_EMAIL,
+        "ROLE_NAME": ROLE_NAME,
+    }
+    return [name for name, value in required.items() if not value]
 
 
 def setup_logger(logger_setup: Logger, log_level=INFO) -> None:
@@ -955,7 +954,7 @@ async def read_message(
 
         # If the message was not found in any channel, send an error message
         await interaction.followup.send(
-            "Message could not be found by the bot, check that the bot has"
+            "Message could not be found by the bot, check that the bot has "
             "permission to view the channel the message is in",
             ephemeral=True,
         )
