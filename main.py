@@ -65,6 +65,21 @@ MEMORY_RESERVE_PERCENT = float(getenv("MEMORY_RESERVE_PERCENT", 10.0))
 THREAD_POOL_WORKERS = int(getenv("THREAD_POOL_WORKERS", 4))
 MAX_RETRIES = int(getenv("MAX_RETRIES", 3))
 RETRY_BACKOFF_MULTIPLIER = float(getenv("RETRY_BACKOFF_MULTIPLIER", 2.5))
+
+
+def missing_required_env() -> list[str]:
+    required = {
+        "DISCORD_TOKEN": DISCORD_TOKEN,
+        "PARENT_FOLDER_ID": PARENT_FOLDER_ID,
+        "CHANNEL_NAME": CHANNEL_NAME,
+        "SHARED_DRIVE_ID": SHARED_DRIVE_ID,
+        "GUILD_ID": GUILD_ID,
+        "DELEGATE_EMAIL": DELEGATE_EMAIL,
+        "ROLE_NAME": ROLE_NAME,
+    }
+    return [name for name, value in required.items() if not value]
+
+
 PARENT_FOLDER_ID = None
 parent_folder_file = "config/parent_folder_id.txt"
 if os.path.exists(parent_folder_file):
@@ -74,35 +89,6 @@ if os.path.exists(parent_folder_file):
 else:
     print("No parent folder ID file found, using environment variable")
     PARENT_FOLDER_ID = getenv("PARENT_FOLDER_ID")
-
-# Exit if any critical variables are None
-if not all(
-    [
-        DISCORD_TOKEN,
-        PARENT_FOLDER_ID,
-        CHANNEL_NAME,
-        SHARED_DRIVE_ID,
-        GUILD_ID,
-        DELEGATE_EMAIL,
-        ROLE_NAME,
-    ]
-):
-    missing_vars = [
-        var
-        for var, value in {
-            "DISCORD_TOKEN": DISCORD_TOKEN,
-            "PARENT_FOLDER_ID": PARENT_FOLDER_ID,
-            "CHANNEL_NAME": CHANNEL_NAME,
-            "SHARED_DRIVE_ID": SHARED_DRIVE_ID,
-            "GUILD_ID": GUILD_ID,
-            "DELEGATE_EMAIL": DELEGATE_EMAIL,
-            "ROLE_NAME": ROLE_NAME,
-        }.items()
-        if not value
-    ]
-    print("Missing environment variables:", ", ".join(missing_vars))
-    exit(1)
-
 
 # Setup Discord intents
 intents = Intents.default()
@@ -1085,6 +1071,11 @@ async def on_disconnect() -> None:
 
 
 if __name__ == "__main__":
+    missing_env = missing_required_env()
+    if missing_env:
+        print("Missing environment variables:", ", ".join(missing_env))
+        exit(1)
+
     setup_logger(logger, getattr(INFO, LOG_LEVEL, INFO))
 
     # Authenticate Google Drive service
