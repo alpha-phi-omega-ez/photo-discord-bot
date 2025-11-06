@@ -12,7 +12,7 @@ This project uses [Just](https://github.com/casey/just) for easy aliases for com
 
 This will install pytest and coverage
 ```bash
-just install
+just install-dev
 ```
 ```bash
 uv sync --extra dev
@@ -20,7 +20,7 @@ uv sync --extra dev
 
 This will exclude testing frameworks, this is used for production
 ```bash
-just install-dev
+just install-prod
 ```
 ```bash
 uv sync
