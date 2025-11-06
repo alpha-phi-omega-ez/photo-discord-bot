@@ -54,20 +54,15 @@ class TestProcessMessage:
         message.add_reaction.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_process_message_skips_when_flagged(self):
+    @pytest.mark.parametrize(
+        ("content", "attachment_count"),
+        [("No Upload", 1), ("hello", 0)],
+        ids=["flagged", "no_attachments"],
+    )
+    async def test_process_message_skips_submission(self, content, attachment_count):
         message = MagicMock()
-        message.content = "No Upload"  # contains flag
-        message.attachments = [MagicMock()]
-
-        with patch("main.submit_task_with_tracking") as mock_submit:
-            await process_message(message)
-            mock_submit.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_process_message_requires_attachments(self):
-        message = MagicMock()
-        message.content = "hello"
-        message.attachments = []
+        message.content = content
+        message.attachments = [MagicMock() for _ in range(attachment_count)]
 
         with patch("main.submit_task_with_tracking") as mock_submit:
             await process_message(message)
@@ -248,24 +243,16 @@ class TestReadMessage:
         mock_discord_interaction.followup.send.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_message_not_found(
-        self, mock_discord_interaction, mock_discord_guild
+    @pytest.mark.parametrize(
+        ("exception_cls", "message"),
+        [(NotFound, "missing"), (Forbidden, "forbidden")],
+        ids=["not_found", "forbidden"],
+    )
+    async def test_message_fetch_errors(
+        self, mock_discord_interaction, mock_discord_guild, exception_cls, message
     ):
         channel = MagicMock()
-        channel.fetch_message = AsyncMock(side_effect=NotFound(Mock(), "missing"))
-        mock_discord_guild.text_channels = [channel]
-
-        with patch("main.GUILD", mock_discord_guild):
-            await invoke_command(
-                read_message, mock_discord_interaction, "123", "folder"
-            )
-
-        mock_discord_interaction.followup.send.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_forbidden(self, mock_discord_interaction, mock_discord_guild):
-        channel = MagicMock()
-        channel.fetch_message = AsyncMock(side_effect=Forbidden(Mock(), "forbidden"))
+        channel.fetch_message = AsyncMock(side_effect=exception_cls(Mock(), message))
         mock_discord_guild.text_channels = [channel]
 
         with patch("main.GUILD", mock_discord_guild):

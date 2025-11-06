@@ -21,39 +21,35 @@ from main import (
 class TestSanitizeFolderName:
     """Tests for sanitize_folder_name function."""
 
-    def test_normal_folder_name(self):
-        """Test normal folder name is unchanged."""
-        assert sanitize_folder_name("MyFolder") == "MyFolder"
+    @pytest.mark.parametrize(
+        ("input_name", "expected"),
+        [
+            ("MyFolder", "MyFolder"),
+            ("", "unnamed"),
+            (None, "unnamed"),
+            ("  .folder.  ", "folder"),
+        ],
+        ids=["normal", "empty", "none", "trim"],
+    )
+    def test_basic_cases(self, input_name, expected):
+        """Ensure common inputs are normalised."""
+        assert sanitize_folder_name(input_name) == expected
 
-    def test_empty_string(self):
-        """Test empty string returns 'unnamed'."""
-        assert sanitize_folder_name("") == "unnamed"
-
-    def test_none_value(self):
-        """Test None value returns 'unnamed'."""
-        assert sanitize_folder_name(None) == "unnamed"
+    @pytest.mark.parametrize(
+        "dangerous_char",
+        ["<", ">", ":", '"', "/", "\\", "|", "?", "*"],
+        ids=lambda char: f"char_{ord(char)}",
+    )
+    def test_dangerous_characters_replaced(self, dangerous_char):
+        """Ensure potentially dangerous characters are replaced."""
+        result = sanitize_folder_name(f"folder{dangerous_char}name")
+        assert dangerous_char not in result
 
     def test_path_traversal_prevention(self):
         """Test path traversal sequences are removed."""
         assert ".." not in sanitize_folder_name("../../../etc/passwd")
         # Each ".." becomes "__", so "../../folder" becomes "____folder"
         assert sanitize_folder_name("../../folder") == "____folder"
-
-    def test_dangerous_characters_replaced(self):
-        """Test dangerous characters are replaced with underscores."""
-        result = sanitize_folder_name('folder<>:"/\\|?*name')
-        assert "<" not in result
-        assert ">" not in result
-        assert ":" not in result
-        assert "/" not in result
-        assert "\\" not in result
-        assert "|" not in result
-        assert "?" not in result
-        assert "*" not in result
-
-    def test_leading_trailing_dots_spaces_removed(self):
-        """Test leading/trailing dots and spaces are removed."""
-        assert sanitize_folder_name("  .folder.  ") == "folder"
 
     def test_length_limit(self):
         """Test folder name is limited to 255 characters."""
@@ -65,75 +61,79 @@ class TestSanitizeFolderName:
 class TestIsTransientError:
     """Tests for is_transient_error function."""
 
-    def test_connection_error(self):
-        """Test connection errors are transient."""
-        error = Exception("Connection error occurred")
+    @pytest.mark.parametrize(
+        "error_message",
+        [
+            "Connection error occurred",
+            "Request timeout",
+            "Network failure",
+            "HTTP 429 rate limit",
+            "HTTP 500 server error",
+            "HTTP 503 service unavailable",
+        ],
+        ids=[
+            "connection",
+            "timeout",
+            "network",
+            "http_429",
+            "http_500",
+            "http_503",
+        ],
+    )
+    def test_transient_error_messages(self, error_message):
+        """Errors containing transient keywords should return True."""
+        error = Exception(error_message)
         assert is_transient_error(error) is True
 
-    def test_timeout_error(self):
-        """Test timeout errors are transient."""
-        error = Exception("Request timeout")
-        assert is_transient_error(error) is True
-
-    def test_network_error(self):
-        """Test network errors are transient."""
-        error = Exception("Network failure")
-        assert is_transient_error(error) is True
-
-    def test_http_429_error(self):
-        """Test HTTP 429 (rate limit) errors are transient."""
-        error = Exception("HTTP 429 rate limit")
-        assert is_transient_error(error) is True
-
-    def test_http_500_error(self):
-        """Test HTTP 500 errors are transient."""
-        error = Exception("HTTP 500 server error")
-        assert is_transient_error(error) is True
-
-    def test_http_503_error(self):
-        """Test HTTP 503 errors are transient."""
-        error = Exception("HTTP 503 service unavailable")
-        assert is_transient_error(error) is True
-
-    def test_response_status_code_429(self):
-        """Test response with status code 429 is transient."""
+    @pytest.mark.parametrize(
+        "status_code",
+        [429, 500],
+        ids=["status_429", "status_500"],
+    )
+    def test_response_status_code_transient(self, status_code):
+        """HTTP responses with retryable status codes should be transient."""
         error = Mock()
         error.response = Mock()
-        error.response.status_code = 429
+        error.response.status_code = status_code
         assert is_transient_error(error) is True
 
-    def test_response_status_code_500(self):
-        """Test response with status code 500 is transient."""
-        error = Mock()
-        error.response = Mock()
-        error.response.status_code = 500
+    @pytest.mark.parametrize(
+        ("exception_cls", "message"),
+        [
+            (type("googleapiclientHttpError", (Exception,), {}), "HTTP 503 Service"),
+            (type("HttpError", (Exception,), {}), "HTTP 429 rate limit"),
+        ],
+        ids=["googleapiclient_http_error", "http_error"],
+    )
+    def test_google_api_transient_errors(self, exception_cls, message):
+        """Specific Google API errors should be treated as transient."""
+        error = exception_cls(message)
         assert is_transient_error(error) is True
 
-    def test_permanent_error(self):
-        """Test permanent errors are not transient."""
-        error = Exception("Invalid credentials")
-        assert is_transient_error(error) is False
-
-    def test_http_404_error(self):
-        """Test HTTP 404 errors are not transient."""
-        error = Exception("HTTP 404 not found")
+    @pytest.mark.parametrize(
+        "error_message",
+        ["Invalid credentials", "HTTP 404 not found"],
+        ids=["invalid_credentials", "http_404"],
+    )
+    def test_non_transient_errors(self, error_message):
+        """Errors without transient indicators should return False."""
+        error = Exception(error_message)
         assert is_transient_error(error) is False
 
 
 class TestExponentialBackoffSleep:
     """Tests for exponential_backoff_sleep function."""
 
+    @pytest.mark.parametrize(
+        ("attempt", "expected_delay"),
+        [(0, 1.0), (1, 2.0), (2, 4.0)],
+        ids=["attempt_0", "attempt_1", "attempt_2"],
+    )
     @patch("main.sleep")
-    def test_exponential_backoff_calculation(self, mock_sleep):
+    def test_exponential_backoff_calculation(self, mock_sleep, attempt, expected_delay):
         """Test exponential backoff delay calculation."""
-        exponential_backoff_sleep(0, base_delay=1.0, multiplier=2.0)
-        mock_sleep.assert_called_once_with(1.0)
-
-        exponential_backoff_sleep(1, base_delay=1.0, multiplier=2.0)
-        mock_sleep.assert_called_with(2.0)
-
-        exponential_backoff_sleep(2, base_delay=1.0, multiplier=2.0)
-        mock_sleep.assert_called_with(4.0)
+        exponential_backoff_sleep(attempt, base_delay=1.0, multiplier=2.0)
+        mock_sleep.assert_called_once_with(expected_delay)
 
     @patch("main.sleep")
     def test_exponential_backoff_default_multiplier(self, mock_sleep):
@@ -244,69 +244,60 @@ class TestGetFileSize:
 class TestIsMemoryAvailable:
     """Tests for is_memory_available function."""
 
+    @pytest.mark.parametrize(
+        ("available_bytes", "file_size", "expected"),
+        [
+            (1000 * 1024 * 1024, 500 * 1024 * 1024, True),
+            (100 * 1024 * 1024, 500 * 1024 * 1024, False),
+        ],
+        ids=["sufficient_memory", "insufficient_memory"],
+    )
     @patch("main.virtual_memory")
-    @patch("main.MEMORY_RESERVE_PERCENT", 10.0)
-    def test_sufficient_memory(self, mock_virtual_memory):
-        """Test when sufficient memory is available."""
+    def test_memory_threshold(  # type: ignore[misc]
+        self, mock_virtual_memory, available_bytes, file_size, expected
+    ):
+        """Verify memory availability against reserve threshold."""
         mock_memory = MagicMock()
-        mock_memory.available = 1000 * 1024 * 1024  # 1GB
+        mock_memory.available = available_bytes
         mock_virtual_memory.return_value = mock_memory
-        assert is_memory_available(500 * 1024 * 1024) is True  # 500MB
+
+        with patch("main.MEMORY_RESERVE_PERCENT", 10.0):
+            assert is_memory_available(file_size) is expected
 
     @patch("main.virtual_memory")
-    @patch("main.MEMORY_RESERVE_PERCENT", 10.0)
-    def test_insufficient_memory(self, mock_virtual_memory):
-        """Test when insufficient memory is available."""
-        mock_memory = MagicMock()
-        mock_memory.available = 100 * 1024 * 1024  # 100MB
-        mock_virtual_memory.return_value = mock_memory
-        assert is_memory_available(500 * 1024 * 1024) is False  # 500MB
-
-    @patch("main.virtual_memory")
-    @patch("main.MEMORY_RESERVE_PERCENT", 20.0)
     def test_memory_reserve_percentage(self, mock_virtual_memory):
         """Test memory reserve percentage is applied."""
         # 1GB available, 20% reserve = 800MB usable
         mock_memory = MagicMock()
         mock_memory.available = 1000 * 1024 * 1024
         mock_virtual_memory.return_value = mock_memory
-        assert is_memory_available(750 * 1024 * 1024) is True  # 750MB < 800MB
-        assert is_memory_available(850 * 1024 * 1024) is False  # 850MB > 800MB
+
+        with patch("main.MEMORY_RESERVE_PERCENT", 20.0):
+            assert is_memory_available(750 * 1024 * 1024) is True
+            assert is_memory_available(850 * 1024 * 1024) is False
 
 
 class TestFindFileName:
     """Tests for find_file_name function."""
 
-    def test_find_image_name(self):
-        """Test finding image file name from URL."""
-        url = "https://example.com/image.jpg"
-        result = find_file_name(IMAGE_NAME_PATTERN, url)
-        assert result == "image.jpg"
-
-    def test_find_image_name_with_path(self):
-        """Test finding image file name with path."""
-        url = "https://example.com/path/to/photo.png"
-        result = find_file_name(IMAGE_NAME_PATTERN, url)
-        assert result == "photo.png"
-
-    def test_find_video_name(self):
-        """Test finding video file name from URL."""
-        url = "https://example.com/video.mp4"
-        result = find_file_name(VIDEO_NAME_PATTERN, url)
-        assert result == "video.mp4"
+    @pytest.mark.parametrize(
+        ("pattern", "url", "expected"),
+        [
+            (IMAGE_NAME_PATTERN, "https://example.com/image.jpg", "image.jpg"),
+            (IMAGE_NAME_PATTERN, "https://example.com/path/to/photo.png", "photo.png"),
+            (VIDEO_NAME_PATTERN, "https://example.com/video.mp4", "video.mp4"),
+        ],
+        ids=["image_simple", "image_nested", "video"],
+    )
+    def test_successful_matches(self, pattern, url, expected):
+        """Test finding file names from URLs."""
+        assert find_file_name(pattern, url) == expected
 
     def test_replace_spaces_with_underscores(self):
         """Test spaces are replaced with underscores."""
         # The regex pattern only matches alphanumeric before extension
-        # So "my image.jpg" would only match "image.jpg" part
-        # Let's test with a URL that has spaces in the filename part
-        url = "https://example.com/my%20image.jpg"
-        # URL encoded spaces won't match, so test with actual matched pattern
         url = "https://example.com/image.jpg"
         result = find_file_name(IMAGE_NAME_PATTERN, url)
-        assert result == "image.jpg"
-        # Test with a URL that has spaces (but the regex won't match)
-        # The function replaces spaces only if they're in the matched part
         assert " " not in result
 
     def test_replace_quotes(self):

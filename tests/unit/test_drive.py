@@ -62,26 +62,26 @@ class TestCheckParentFolderId:
 class TestCheckFolderExists:
     """Tests for check_folder_exists function."""
 
-    def test_folder_found(self, mock_google_drive_service):
+    @pytest.mark.parametrize(
+        ("api_response", "expected_id"),
+        [
+            ({"files": [{"id": "folder_id", "name": "test"}]}, "folder_id"),
+            ({"files": []}, None),
+        ],
+        ids=["folder_found", "folder_missing"],
+    )
+    def test_folder_lookup(self, mock_google_drive_service, api_response, expected_id):
         files_resource = mock_google_drive_service.files.return_value
-        files_resource.list.return_value.execute.return_value = {
-            "files": [{"id": "folder_id", "name": "test"}]
-        }
+        files_resource.list.return_value.execute.return_value = api_response
 
         with patch("main.SERVICE", mock_google_drive_service):
             with patch("main.PARENT_FOLDER_ID", "parent"):
                 with patch("main.SHARED_DRIVE_ID", "drive"):
-                    assert check_folder_exists("test") == "folder_id"
-                    files_resource.list.assert_called_once()
+                    with patch("main.folder_cache", {}):
+                        result = check_folder_exists("test")
 
-    def test_folder_not_found(self, mock_google_drive_service):
-        files_resource = mock_google_drive_service.files.return_value
-        files_resource.list.return_value.execute.return_value = {"files": []}
-
-        with patch("main.SERVICE", mock_google_drive_service):
-            with patch("main.PARENT_FOLDER_ID", "parent"):
-                with patch("main.SHARED_DRIVE_ID", "drive"):
-                    assert check_folder_exists("missing") is None
+        assert result == expected_id
+        files_resource.list.assert_called_once()
 
     def test_folder_cached(self, mock_google_drive_service):
         with patch("main.SERVICE", mock_google_drive_service):

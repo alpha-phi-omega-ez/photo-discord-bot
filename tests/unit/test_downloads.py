@@ -61,54 +61,45 @@ class TestDownloadImage:
             mock_convert.assert_called_once()
             mock_upload.assert_called_once()
 
+    @pytest.mark.parametrize(
+        ("max_file_size", "status_code", "content", "exception_message"),
+        [
+            (0, 404, b"", "HTTP 404 error downloading"),
+            (100, 200, b"x" * 200, "File size 200 exceeds limit 100"),
+        ],
+        ids=["http_status_error", "file_size_limit"],
+    )
     @patch("main.http_session")
-    @patch("main.MAX_FILE_SIZE_BYTES", 0)
-    def test_non_200_status_code(self, mock_session):
-        """Test non-200 status code raises exception."""
+    def test_failure_conditions(
+        self,
+        mock_session,
+        max_file_size,
+        status_code,
+        content,
+        exception_message,
+    ):
+        """Test failure conditions raise appropriate exceptions."""
         mock_response = MagicMock()
-        mock_response.status_code = 404
+        mock_response.status_code = status_code
+        mock_response.content = content
         mock_session.get.return_value = mock_response
 
-        with patch("main.retry_with_backoff") as mock_retry:
+        with patch("main.MAX_FILE_SIZE_BYTES", max_file_size):
+            with patch("main.retry_with_backoff") as mock_retry:
 
-            def failing_func():
-                raise Exception("HTTP 404 error downloading")
+                def failing_func(*_args, **_kwargs):
+                    raise Exception(exception_message)
 
-            mock_retry.side_effect = failing_func
+                mock_retry.side_effect = failing_func
 
-            with pytest.raises(Exception):
-                download_image(
-                    "https://example.com/image.jpg",
-                    "image.jpg",
-                    "folder_id",
-                    "jpg",
-                    "thread_name",
-                )
-
-    @patch("main.http_session")
-    @patch("main.MAX_FILE_SIZE_BYTES", 100)
-    def test_file_size_exceeds_limit(self, mock_session):
-        """Test file size limit check."""
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_response.content = b"x" * 200  # Exceeds 100 byte limit
-        mock_session.get.return_value = mock_response
-
-        with patch("main.retry_with_backoff") as mock_retry:
-
-            def failing_func():
-                raise Exception("File size 200 exceeds limit 100")
-
-            mock_retry.side_effect = failing_func
-
-            with pytest.raises(Exception):
-                download_image(
-                    "https://example.com/image.jpg",
-                    "image.jpg",
-                    "folder_id",
-                    "jpg",
-                    "thread_name",
-                )
+                with pytest.raises(Exception, match=exception_message):
+                    download_image(
+                        "https://example.com/image.jpg",
+                        "image.jpg",
+                        "folder_id",
+                        "jpg",
+                        "thread_name",
+                    )
 
     @patch("main.upload")
     @patch("main.http_session")
@@ -295,42 +286,24 @@ class TestDownloadVideo:
                     "thread_name",
                 )
 
+    @pytest.mark.parametrize(
+        ("upload_side_effect", "expected_exception"),
+        [(None, None), (Exception("Upload failed"), "Upload failed")],
+        ids=["upload_success", "upload_failure"],
+    )
     @patch("main.upload")
     @patch("main.get_file_size")
     @patch("main.http_session")
     @patch("main.VIDEO_IN_MEMORY", False)
-    def test_temp_file_cleanup(self, mock_session, mock_get_size, mock_upload):
-        """Test temporary file is cleaned up after upload."""
-        mock_get_size.return_value = 1024
-
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_response.iter_content = MagicMock(return_value=[b"chunk1", b"chunk2"])
-        mock_session.get.return_value = mock_response
-
-        with patch("main.retry_with_backoff") as mock_retry:
-            mock_retry.side_effect = lambda func: func()
-
-            with patch("main.unlink") as mock_unlink:
-                download_video(
-                    "folder_id",
-                    "https://example.com/video.mp4",
-                    "video.mp4",
-                    "mp4",
-                    "thread_name",
-                )
-
-                # Verify temp file was deleted
-                mock_unlink.assert_called_once()
-
-    @patch("main.upload")
-    @patch("main.get_file_size")
-    @patch("main.http_session")
-    @patch("main.VIDEO_IN_MEMORY", False)
-    def test_temp_file_cleanup_on_upload_error(
-        self, mock_session, mock_get_size, mock_upload
+    def test_temp_file_cleanup(
+        self,
+        mock_session,
+        mock_get_size,
+        mock_upload,
+        upload_side_effect,
+        expected_exception,
     ):
-        """Test temporary file is cleaned up even if upload fails."""
+        """Temporary files should be removed regardless of upload outcome."""
         mock_get_size.return_value = 1024
 
         mock_response = MagicMock()
@@ -338,13 +311,23 @@ class TestDownloadVideo:
         mock_response.iter_content = MagicMock(return_value=[b"chunk1", b"chunk2"])
         mock_session.get.return_value = mock_response
 
-        mock_upload.side_effect = Exception("Upload failed")
+        if upload_side_effect:
+            mock_upload.side_effect = upload_side_effect
 
         with patch("main.retry_with_backoff") as mock_retry:
             mock_retry.side_effect = lambda func: func()
 
             with patch("main.unlink") as mock_unlink:
-                with pytest.raises(Exception, match="Upload failed"):
+                if expected_exception:
+                    with pytest.raises(Exception, match=expected_exception):
+                        download_video(
+                            "folder_id",
+                            "https://example.com/video.mp4",
+                            "video.mp4",
+                            "mp4",
+                            "thread_name",
+                        )
+                else:
                     download_video(
                         "folder_id",
                         "https://example.com/video.mp4",
