@@ -1,11 +1,9 @@
-import os
-import re
 import threading
 from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import datetime, timedelta
 from io import BytesIO
 from logging import INFO, Formatter, Logger, StreamHandler, getLogger
-from os import getenv, unlink
+from os import getenv, path, unlink
 from re import compile as re_compile
 from tempfile import NamedTemporaryFile
 from time import sleep
@@ -82,7 +80,7 @@ def missing_required_env() -> list[str]:
 
 PARENT_FOLDER_ID = None
 parent_folder_file = "config/parent_folder_id.txt"
-if os.path.exists(parent_folder_file):
+if path.exists(parent_folder_file):
     print("Reading parent folder ID from file")
     with open(parent_folder_file, "r") as f:
         PARENT_FOLDER_ID = f.read().strip()
@@ -112,6 +110,9 @@ SCOPES = [
 ]
 IMAGE_NAME_PATTERN = re_compile(r"([\w]+\.(?:png|jpg|jpeg|heic|heif))")
 VIDEO_NAME_PATTERN = re_compile(r"([\w]+\.(?:mp4|mov|avi|mkv))")
+SANITIZE_BAD_CHARS_RE = re_compile(r'[<>:"/\\|?*]')
+SANITIZE_PATH_TRAVERSAL_RE = re_compile(r"\.\.+")
+FOLDER_ID_PATTERN = re_compile(r"^[a-zA-Z0-9_-]+$")
 
 # Google service
 SERVICE = None
@@ -160,9 +161,9 @@ def sanitize_folder_name(name: str) -> str:
     if not name:
         return "unnamed"
     # Remove or replace dangerous characters
-    name = re.sub(r'[<>:"/\\|?*]', "_", name)
+    name = SANITIZE_BAD_CHARS_RE.sub("_", name)
     # Remove path traversal sequences
-    name = name.replace("..", "_")
+    name = SANITIZE_PATH_TRAVERSAL_RE.sub("_", name)
     # Remove leading/trailing dots and spaces, limit length
     name = name.strip(". ")[:255]
     return name if name else "unnamed"
@@ -229,14 +230,16 @@ def retry_with_backoff(func: Callable, *args, max_retries: int = None, **kwargs)
             if attempt < max_retries - 1:
                 logger.warning(
                     f"Transient error in {func.__name__} (attempt {attempt + 1}/"
-                    "{max_retries}): {e}. Retrying..."
+                    f"{max_retries}): {e}. Retrying..."
                 )
                 exponential_backoff_sleep(attempt)
             else:
                 logger.error(f"Max retries exceeded for {func.__name__}: {e}")
 
-    if last_exception:
+    if last_exception is not None:
         raise last_exception
+
+    return None
 
 
 def get_file_size(url: str) -> int | None:
@@ -991,7 +994,7 @@ async def change_folder_command(interaction: Interaction, folder_id: str) -> Non
     """A command that only allows users with a specific role to perform an action."""
     try:
         # Validate folder_id format (alphanumeric, dash, underscore)
-        if not re.match(r"^[a-zA-Z0-9_-]+$", folder_id):
+        if not FOLDER_ID_PATTERN.fullmatch(folder_id):
             await interaction.response.send_message(
                 "Invalid folder ID format. Please provide a valid folder ID.",
                 ephemeral=True,

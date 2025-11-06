@@ -62,7 +62,7 @@ uv run main.py
 
 ## Testing
 
-Testing uses pytest, there are currently unit tests and integration tests. The deprecation warning is ignored due to it being a warning in discord.py's code and is unrelated to this project as it does't use voice functionality in the `discord.player`.
+Testing uses pytest, there are currently unit tests and integration tests. The deprecation warning is ignored due to it being a warning in discord.py's code and is unrelated to this project as it doesn't use voice functionality in the `discord.player`.
 
 Run the full test suite (unit + integration):
 
@@ -76,7 +76,7 @@ uv run pytest -v -W ignore::DeprecationWarning:discord.player
 Run only the unit tests:
 
 ```bash
-just test-unit
+just unit-test
 ```
 ```bash
 uv run pytest tests/unit -v -W ignore::DeprecationWarning:discord.player
@@ -85,7 +85,7 @@ uv run pytest tests/unit -v -W ignore::DeprecationWarning:discord.player
 Run only the integration tests:
 
 ```bash
-just test-integration
+just int-test
 ```
 ```bash
 uv run pytest tests/integration -v -W ignore::DeprecationWarning:discord.player
