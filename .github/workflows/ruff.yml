@@ -1,6 +1,12 @@
 name: Ruff Lint Check
 
-on: [pull_request]
+on:
+  pull_request:
+    paths:
+      - "**.py"
+      - "uv.lock"
+      - "pyproject.toml"
+      - ".python-version"
 
 permissions:
   contents: read
