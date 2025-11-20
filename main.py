@@ -627,9 +627,11 @@ async def process_message(message, thread_name=None, folder_id=None) -> None:
         # Add a reaction to the message
         if message.guild is not None:
             try:
-                await message.add_reaction(
-                    utils.get(message.guild.emojis, name="glump_photo")
-                )
+                emoji = utils.get(message.guild.emojis, name="glump_photo")
+                if emoji is not None:
+                    await message.add_reaction(emoji)
+                else:
+                    await message.add_reaction("👍")
             except errors.HTTPException as e:
                 logger.debug(f"Failed to add reaction: {e}")
                 await message.add_reaction("👍")
