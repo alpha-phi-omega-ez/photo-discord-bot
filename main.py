@@ -381,7 +381,7 @@ def upload(
         if uploaded_file:
             logger.info(
                 f"Uploaded {file_name} to {thread_name}, "
-                "File ID: {uploaded_file.get('id')}"
+                f"File ID: {uploaded_file.get('id')}"
             )
         else:
             logger.warning(f"Failed to upload image: {file_name.upper()}")
