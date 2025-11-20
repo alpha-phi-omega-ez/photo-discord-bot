@@ -778,7 +778,7 @@ async def read_message(
 
         # If the message was not found in any channel, send an error message
         await interaction.followup.send(
-            "Message could not be found by the bot, check that the bot has"
+            "Message could not be found by the bot, check that the bot has "
             "permission to view the channel the message is in",
             ephemeral=True,
         )
