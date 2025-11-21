@@ -57,6 +57,8 @@ DELEGATE_EMAIL = getenv("DELEGATE_EMAIL")
 LOG_LEVEL = getenv("LOG_LEVEL", "INFO").upper()
 ROLE_NAME = getenv("ROLE_NAME")
 PARENT_FOLDER_ID = None
+# Exponential backoff delays: 2s, 6s, 18s, 54s, 120s (capped)
+EXPONENTIAL_BACKOFF_DELAYS = [2.0, 6.0, 18.0, 54.0, 120.0]
 parent_folder_file = "config/parent_folder_id.txt"
 if os.path.exists(parent_folder_file):
     print("Reading parent folder ID from file")
@@ -194,12 +196,12 @@ def check_parent_folder_id(folder_id: str) -> bool:
     try:
         if not SERVICE:
             raise Exception("Google Drive service not authenticated")
-        
-        _ = SERVICE.files().get(
-            fileId=folder_id,
-            supportsAllDrives=True,
-            fields="id"
-        ).execute()
+
+        _ = (
+            SERVICE.files()
+            .get(fileId=folder_id, supportsAllDrives=True, fields="id")
+            .execute()
+        )
         return True
     except Exception as e:
         logger.warning(f"Invalid folder ID provided: {folder_id} - {e}")
@@ -213,7 +215,8 @@ def check_folder_exists(folder_name: str) -> str | None:
 
         logger.debug(f"Searching for folder: {folder_name}")
 
-        for _ in range(3):
+        response = None
+        for attempt in range(5):
             try:
                 # Search for the folder in the specified shared drive
                 # using the folder name and parent folder ID
@@ -232,9 +235,13 @@ def check_folder_exists(folder_name: str) -> str | None:
                 break
             except Exception as e:
                 logger.debug(f"Failed to find folder: {e}")
-                sleep(1)
+                if attempt < 4:  # Don't sleep after last attempt
+                    sleep(EXPONENTIAL_BACKOFF_DELAYS[attempt])
 
         # Check if the folder exists in the response
+        if response is None:
+            logger.debug(f"Failed to find folder: {folder_name}")
+            return None
         folders = response.get("files", [])
         if folders:
             return folders[0].get("id")
@@ -259,7 +266,8 @@ def create_folder(folder_name) -> str | None:
 
         logger.debug(f"Creating folder: {folder_name}")
 
-        for _ in range(3):
+        new_folder = None
+        for attempt in range(5):
             try:
                 # Create the new folder in the specified shared drive folder
                 new_folder = (
@@ -274,7 +282,8 @@ def create_folder(folder_name) -> str | None:
                 break
             except Exception as e:
                 logger.debug(f"Failed to create folder: {e}")
-                sleep(3)
+                if attempt < 4:  # Don't sleep after last attempt
+                    sleep(EXPONENTIAL_BACKOFF_DELAYS[attempt])
 
         if new_folder:
             return new_folder.get("id")
@@ -321,7 +330,7 @@ def upload(
     try:
         if not SERVICE:
             raise Exception("Google Drive service not authenticated")
-        
+
         # Define metadata for the new file
         file_metadata = {
             "name": file_name.upper(),
@@ -344,7 +353,8 @@ def upload(
             )
 
         if media:
-            for _ in range(3):
+            uploaded_file = None
+            for attempt in range(5):
                 try:
                     # Upload the file to Google drive
                     uploaded_file = (
@@ -361,7 +371,8 @@ def upload(
                     break
                 except Exception as e:
                     logger.debug(f"Failed to upload image: {e}")
-                    sleep(3)
+                    if attempt < 4:  # Don't sleep after last attempt
+                        sleep(EXPONENTIAL_BACKOFF_DELAYS[attempt])
         else:
             logger.error("No media data to upload")
             return
@@ -370,7 +381,7 @@ def upload(
         if uploaded_file:
             logger.info(
                 f"Uploaded {file_name} to {thread_name}, "
-                "File ID: {uploaded_file.get('id')}"
+                f"File ID: {uploaded_file.get('id')}"
             )
         else:
             logger.warning(f"Failed to upload image: {file_name.upper()}")
@@ -382,7 +393,7 @@ def upload(
 def download_image(url, file_name, folder_id, extension, thread_name) -> None:
     try:
         logger.debug(f"Downloading image from {url}")
-        for _ in range(3):
+        for attempt in range(5):
             try:
                 # Request the image data
                 response = get(url)
@@ -416,7 +427,8 @@ def download_image(url, file_name, folder_id, extension, thread_name) -> None:
                     logger.debug(f"Failed to download image from {url}")
             except Exception as e:
                 logger.debug(f"Failed to download image: {e}")
-                sleep(3)
+                if attempt < 4:  # Don't sleep after last attempt
+                    sleep(EXPONENTIAL_BACKOFF_DELAYS[attempt])
 
         logger.error(f"Failed to download image: {url}")
     except Exception as e:
@@ -427,7 +439,7 @@ def download_video(folder_id, url, file_name, extension, thread_name) -> None:
     try:
         logger.debug(f"Downloading video from {url}")
 
-        for _ in range(3):
+        for attempt in range(5):
             try:
                 # Get the file size from the URL
                 file_size = get_file_size(url)
@@ -510,7 +522,8 @@ def download_video(folder_id, url, file_name, extension, thread_name) -> None:
                     logger.debug(f"Failed to download image from {url}")
             except Exception as e:
                 logger.debug(f"Failed to download image: {e}")
-                sleep(3)
+                if attempt < 4:  # Don't sleep after last attempt
+                    sleep(EXPONENTIAL_BACKOFF_DELAYS[attempt])
     except Exception as e:
         logger.error(f"Failed to download video: {e}")
 
@@ -614,9 +627,11 @@ async def process_message(message, thread_name=None, folder_id=None) -> None:
         # Add a reaction to the message
         if message.guild is not None:
             try:
-                await message.add_reaction(
-                    utils.get(message.guild.emojis, name="glump_photo")
-                )
+                emoji = utils.get(message.guild.emojis, name="glump_photo")
+                if emoji is not None:
+                    await message.add_reaction(emoji)
+                else:
+                    await message.add_reaction("👍")
             except errors.HTTPException as e:
                 logger.debug(f"Failed to add reaction: {e}")
                 await message.add_reaction("👍")
@@ -636,9 +651,9 @@ async def on_ready() -> None:
 
     # Get the guild (server) where the bot is running
     GUILD = bot.get_guild(int(GUILD_ID))
-    
+
     logger.debug(f"Guild: {GUILD}")
-    
+
     if not GUILD:
         logger.error("Failed to find guild")
         exit(1)
@@ -687,9 +702,7 @@ async def read_thread(interaction: Interaction, thread_id: str) -> None:
             async for message in thread.history(limit=None):
                 logger.debug(f"Message: {message}")
                 # Check if the bot has already reacted to the message
-                if not any(
-                    reaction.me for reaction in message.reactions
-                ):
+                if not any(reaction.me for reaction in message.reactions):
                     await process_message(message)
         else:
             # If the channel is not a thread, send an error message
@@ -736,11 +749,9 @@ async def read_message(
                 message = await channel.fetch_message(int(message_id))
                 logger.debug(f"Message found in channel {channel.name}: {message}")
 
-                if not any(
-                    reaction.me for reaction in message.reactions
-                ):
+                if not any(reaction.me for reaction in message.reactions):
                     await process_message(message, thread_name=folder_name)
-                    
+
                     # Respond to the interaction with a message
                     await interaction.followup.send(
                         f"Photo/Videos being uploaded to {folder_name}",
@@ -764,10 +775,10 @@ async def read_message(
                     ephemeral=True,
                 )
                 return
-        
+
         # If the message was not found in any channel, send an error message
         await interaction.followup.send(
-            "Message could not be found by the bot, check that the bot has" \
+            "Message could not be found by the bot, check that the bot has "
             "permission to view the channel the message is in",
             ephemeral=True,
         )
@@ -782,12 +793,8 @@ async def read_message(
             )
 
 
-@bot.tree.command(
-    name="help", description="Help command to show available commands"
-)
-async def help_message(
-    interaction: Interaction
-) -> None:
+@bot.tree.command(name="help", description="Help command to show available commands")
+async def help_message(interaction: Interaction) -> None:
     await interaction.response.send_message(
         "Commands:\n"
         "/threadimages <thread_id> - Read all messages in a specific thread to "
@@ -805,9 +812,7 @@ async def help_message(
     name="changefolder",
     description="Change the folder ID of the channel to upload images to",
 )
-@app_commands.describe(
-    folder_id="The folder ID to upload images to"
-)
+@app_commands.describe(folder_id="The folder ID to upload images to")
 async def change_folder_command(interaction: Interaction, folder_id: str) -> None:
     """A command that only allows users with a specific role to perform an action."""
     try:
