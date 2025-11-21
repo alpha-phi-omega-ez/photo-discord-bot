@@ -1,5 +1,9 @@
-# Use the latest uv image with python 3.12 and debian
-FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim
+# Use the 3.12.12 official python image with debian trixie (v13)
+FROM python:3.12.12-slim-trixie
+
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+
+ENV UV_COMPILE_BYTECODE=1
 
 WORKDIR /app
 
