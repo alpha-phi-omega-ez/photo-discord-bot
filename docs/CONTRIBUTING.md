@@ -32,7 +32,7 @@ For contributing to the code feel free to check out [issues](https://github.com/
 
 # How to report a bug
 
-> If you find a security vulnerability, do NOT open an issue. Contact someone on our discord https://discord.gg/hqYrMR8AcE.
+> If you find a security vulnerability, do NOT open an issue. Please contact an organization owner.
 
 To report a bug please use the bug report [issues](https://github.com/alpha-phi-omega-ez/photo-discord-bot/issues) template. The template has all the questions and information we need from you to help solve this bug.
 
