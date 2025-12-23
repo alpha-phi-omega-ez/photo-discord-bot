@@ -1,5 +1,5 @@
 # Use the 3.12.12 official python image with debian trixie (v13)
-FROM python:3.12.12-slim-trixie
+FROM dhi.io/python:3.12.12-slim-trixie
 
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
