@@ -40,10 +40,10 @@ WORKDIR /app
 COPY --from=builder /runtime-libs/ /usr/lib/aarch64-linux-gnu/
 COPY --from=builder /runtime-libs/ /usr/lib/x86_64-linux-gnu/
 
+COPY main.py /app/main.py
+
 # Copy the virtual environment from the builder
 COPY --from=builder /app/.venv /app/.venv
-
-COPY main.py /app/main.py
 
 # Set environment to use the installed packages
 ENV PATH="/app/.venv/bin:$PATH"
