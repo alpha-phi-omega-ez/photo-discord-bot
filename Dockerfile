@@ -25,13 +25,14 @@ FROM dhi.io/python:3.12-debian13
 
 WORKDIR /app
 
-# Copy the system libraries and python packages from the builder
-COPY --from=builder /usr/bin/gcc /usr/bin/gcc
-COPY --from=builder /usr/bin/libheif-dev /usr/bin/libheif-dev
-COPY --from=builder /usr/bin/libffi-dev /usr/bin/libffi-dev
-COPY --from=builder /usr/bin/libjpeg-dev /usr/bin/libjpeg-dev
-COPY --from=builder /usr/bin/libpng-dev /usr/bin/libpng-dev
-COPY --from=builder /usr/bin/python3-dev /usr/bin/python3-dev
+# Copy runtime libraries from builder (installed as dependencies of -dev packages)
+# These are needed by pyheif and Pillow for HEIC/HEIF, JPEG, and PNG support
+COPY --from=builder /usr/lib/x86_64-linux-gnu/libheif.so* /usr/lib/x86_64-linux-gnu/
+COPY --from=builder /usr/lib/x86_64-linux-gnu/libffi.so* /usr/lib/x86_64-linux-gnu/
+COPY --from=builder /usr/lib/x86_64-linux-gnu/libjpeg.so* /usr/lib/x86_64-linux-gnu/
+COPY --from=builder /usr/lib/x86_64-linux-gnu/libpng16.so* /usr/lib/x86_64-linux-gnu/
+
+# Copy the virtual environment from the builder
 COPY --from=builder /install /app/.venv
 
 COPY main.py /app/main.py
