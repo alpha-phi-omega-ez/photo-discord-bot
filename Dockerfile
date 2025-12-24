@@ -15,8 +15,10 @@ RUN apt-get update && \
 
 COPY uv.lock pyproject.toml main.py /app/
 
-# Install the required packages
-RUN uv sync --frozen --no-dev --target /install
+# Create virtual environment and install the required packages
+RUN uv venv /install && \
+    . /install/bin/activate && \
+    uv sync --frozen --no-dev
 
 # Use the 3.12 official docker hardened python image with debian trixie (v13)
 FROM dhi.io/python:3.12-debian13
