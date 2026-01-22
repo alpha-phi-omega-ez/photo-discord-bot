@@ -9,8 +9,7 @@ on:
       - "Dockerfile"
       - ".python-version"
 
-permissions:
-  contents: read
+permissions: read-all
 
 jobs:
   build:
