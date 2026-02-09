@@ -56,17 +56,9 @@ VIDEO_IN_MEMORY = getenv("VIDEO_IN_MEMORY", "False").lower() == "true"
 DELEGATE_EMAIL = getenv("DELEGATE_EMAIL")
 LOG_LEVEL = getenv("LOG_LEVEL", "INFO").upper()
 ROLE_NAME = getenv("ROLE_NAME")
-PARENT_FOLDER_ID = None
+PARENT_FOLDER_ID = getenv("PARENT_FOLDER_ID")
 # Exponential backoff delays: 2s, 6s, 18s, 54s, 120s (capped)
 EXPONENTIAL_BACKOFF_DELAYS = [2.0, 6.0, 18.0, 54.0, 120.0]
-parent_folder_file = "config/parent_folder_id.txt"
-if os.path.exists(parent_folder_file):
-    print("Reading parent folder ID from file")
-    with open(parent_folder_file, "r") as f:
-        PARENT_FOLDER_ID = f.read().strip()
-else:
-    print("No parent folder ID file found, using environment variable")
-    PARENT_FOLDER_ID = getenv("PARENT_FOLDER_ID")
 
 # Exit if any critical variables are None
 if not all(
