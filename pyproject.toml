@@ -43,7 +43,7 @@ dependencies = [
     "ruff>=0.15.12",
     "sentry-sdk>=2.58.0",
     "uritemplate>=4.1.1",
-    "urllib3>=2.2.3",
+    "urllib3>=2.7.0",
     "yarl>=1.18.3",
 ]
 
