@@ -9,7 +9,7 @@ WORKDIR /app
 
 # Install dependencies
 RUN apt-get update && \
-    apt-get install -y gcc libheif-dev libffi-dev python3-dev libjpeg-dev libpng-dev && \
+    apt-get install -y gcc libheif-dev libffi-dev python3.12-dev libjpeg-dev libpng-dev && \
     rm -rf /var/lib/apt/lists/*
 
 
