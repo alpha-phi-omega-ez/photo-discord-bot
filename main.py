@@ -1,3 +1,4 @@
+import logging
 import os
 from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO
@@ -156,13 +157,18 @@ def get_file_size(url: str) -> int | None:
     try:
         response = head(url)
         if response.status_code == 200 and "Content-Length" in response.headers:
-            logger.debug(f"File size for {url}: {response.headers['Content-Length']}")
+            logger.debug(
+                f"File size for {url}: {response.headers['Content-Length']} bytes"
+            )
             return int(response.headers["Content-Length"])
         else:
-            logger.debug("Could not retrieve file size.")
+            logger.warning(
+                f"Could not retrieve file size for {url} "
+                f"(status {response.status_code}, no Content-Length)"
+            )
             return None
     except Exception as e:
-        logger.error(f"Failed to get file size: {e}")
+        logger.warning(f"Failed to get file size for {url}: {e}")
         return None
 
 
@@ -234,21 +240,27 @@ def check_folder_exists(folder_name: str) -> str | None:
                 )
                 break
             except Exception as e:
-                logger.debug(f"Failed to find folder: {e}")
+                logger.warning(
+                    f"Failed to find folder '{folder_name}' "
+                    f"(attempt {attempt + 1}/5): {e}"
+                )
                 if attempt < 4:  # Don't sleep after last attempt
                     sleep(EXPONENTIAL_BACKOFF_DELAYS[attempt])
 
         # Check if the folder exists in the response
         if response is None:
-            logger.debug(f"Failed to find folder: {folder_name}")
+            logger.error(
+                f"Failed to find folder '{folder_name}' in parent {PARENT_FOLDER_ID} "
+                "after retries"
+            )
             return None
         folders = response.get("files", [])
         if folders:
             return folders[0].get("id")
 
-        logger.debug(f"Failed to find folder: {folder_name}")
+        logger.info(f"Folder '{folder_name}' does not exist yet")
     except Exception as e:
-        logger.error(f"Failed to find folder: {e}")
+        logger.error(f"Failed to find folder '{folder_name}': {e}")
     return None
 
 
@@ -281,22 +293,32 @@ def create_folder(folder_name) -> str | None:
                 )
                 break
             except Exception as e:
-                logger.debug(f"Failed to create folder: {e}")
+                logger.warning(
+                    f"Failed to create folder '{folder_name}' "
+                    f"(attempt {attempt + 1}/5): {e}"
+                )
                 if attempt < 4:  # Don't sleep after last attempt
                     sleep(EXPONENTIAL_BACKOFF_DELAYS[attempt])
 
         if new_folder:
+            logger.info(
+                f"Created folder '{folder_name}' ({new_folder.get('id')}) "
+                f"in parent {PARENT_FOLDER_ID}"
+            )
             return new_folder.get("id")
 
-        logger.error(f"Failed to create folder: {folder_name}")
+        logger.error(
+            f"Failed to create folder '{folder_name}' after retries "
+            f"in parent {PARENT_FOLDER_ID}"
+        )
     except Exception as e:
-        logger.error(f"Failed to create folder: {e}")
+        logger.error(f"Failed to create folder '{folder_name}': {e}")
     return None
 
 
 def convert_to_jpeg(image_data, file_name, extension):
     try:
-        logger.debug("Converting HEIC/HEIF image")
+        logger.debug(f"Converting HEIC/HEIF image {file_name} ({extension})")
         heif_file = pyheif_read(BytesIO(image_data))
 
         # Convert to a Pillow Image object
@@ -316,11 +338,13 @@ def convert_to_jpeg(image_data, file_name, extension):
         new_extension = "jpeg"
         new_file_name = file_name.replace("heic", "jpeg")
 
-        logger.debug("Converted HEIC/HEIF image")
+        logger.debug(f"Converted HEIC/HEIF image {file_name} to {new_file_name}")
 
         return new_image_data, new_file_name, new_extension
     except Exception as e:
-        logger.debug(f"Failed to convert HEIC/HEIF image: {e}")
+        logger.warning(
+            f"Failed to convert HEIC/HEIF image {file_name}, uploading original: {e}"
+        )
         return image_data, file_name, extension
 
 
@@ -370,7 +394,10 @@ def upload(
                     )
                     break
                 except Exception as e:
-                    logger.debug(f"Failed to upload image: {e}")
+                    logger.warning(
+                        f"Failed to upload {file_name} to folder {folder_id} "
+                        f"(thread '{thread_name}', attempt {attempt + 1}/5): {e}"
+                    )
                     if attempt < 4:  # Don't sleep after last attempt
                         sleep(EXPONENTIAL_BACKOFF_DELAYS[attempt])
 
@@ -386,15 +413,24 @@ def upload(
                     f"'{thread_name}' in folder {folder_id} after retries"
                 )
         else:
-            logger.warning(f"Failed to upload image: {file_name.upper()}")
+            logger.error(
+                f"No media data to upload for {file_name} to thread "
+                f"'{thread_name}' in folder {folder_id}"
+            )
         sleep(1)
     except Exception as e:
-        logger.error(f"Failed to upload image: {e}")
+        logger.error(
+            f"Failed to upload {file_name} to thread '{thread_name}' "
+            f"in folder {folder_id}: {e}"
+        )
 
 
 def download_image(url, file_name, folder_id, extension, thread_name, retry) -> None:
     try:
-        logger.debug(f"Downloading image from {url}")
+        logger.debug(
+            f"Downloading image {file_name} from {url} to folder {folder_id} "
+            f"(thread '{thread_name}')"
+        )
         for attempt in range(5):
             try:
                 # Request the image data
@@ -405,7 +441,7 @@ def download_image(url, file_name, folder_id, extension, thread_name, retry) -> 
                     # Get the image data
                     image_data = response.content
 
-                    logger.debug(f"Downloaded image from {url}")
+                    logger.debug(f"Downloaded image {file_name} from {url}")
 
                     # Check if the image is HEIC/HEIF and convert to JPEG
                     if "heic" == extension or "heif" == extension:
@@ -426,9 +462,16 @@ def download_image(url, file_name, folder_id, extension, thread_name, retry) -> 
                     )
                     return
                 else:
-                    logger.debug(f"Failed to download image from {url}")
+                    logger.warning(
+                        f"Failed to download image {file_name} from {url}: "
+                        f"status {response.status_code} "
+                        f"(attempt {attempt + 1}/5)"
+                    )
             except Exception as e:
-                logger.debug(f"Failed to download image: {e}")
+                logger.warning(
+                    f"Failed to download image {file_name} from {url} "
+                    f"(attempt {attempt + 1}/5): {e}"
+                )
                 if attempt < 4:  # Don't sleep after last attempt
                     sleep(EXPONENTIAL_BACKOFF_DELAYS[attempt])
 
@@ -455,30 +498,38 @@ def download_image(url, file_name, folder_id, extension, thread_name, retry) -> 
             "after 5 attempts, and a retry of the function"
         )
     except Exception as e:
-        logger.error(f"Failed to download image: {e}")
+        logger.error(
+            f"Failed to download image {file_name} from {url} to folder "
+            f"{folder_id}: {e}"
+        )
 
 
 def download_video(folder_id, url, file_name, extension, thread_name, retry) -> None:
     try:
-        logger.debug(f"Downloading video from {url}")
+        logger.debug(
+            f"Downloading video {file_name} from {url} to folder {folder_id} "
+            f"(thread '{thread_name}')"
+        )
 
         for attempt in range(5):
             try:
                 # Get the file size from the URL
                 file_size = get_file_size(url)
 
-                logger.debug(f"File size: {file_size}")
+                logger.debug(f"File size for {url}: {file_size} bytes")
 
                 # Request the video data
                 response = get(url, stream=True)
                 logger.debug(f"Response {url}: {response.status_code}")
 
                 if response.status_code == 200:
-                    logger.debug(f"Downloaded video from {url}")
+                    logger.debug(f"Downloaded video {file_name} from {url}")
 
                     # Check if the file size is available and if memory is available
                     if VIDEO_IN_MEMORY and file_size and is_memory_available(file_size):
-                        logger.debug(f"Downloading video from {url} to memory")
+                        logger.debug(
+                            f"Downloading video {file_name} from {url} to memory"
+                        )
 
                         # Use BytesIO as an in-memory file to store the download stream
                         video_stream = BytesIO()
@@ -490,7 +541,7 @@ def download_video(folder_id, url, file_name, extension, thread_name, retry) -> 
                         # Reset the stream position to the start
                         video_stream.seek(0)
 
-                        logger.debug("Completed download to memory")
+                        logger.debug(f"Completed download of {file_name} to memory")
 
                         upload(
                             folder_id,
@@ -504,7 +555,9 @@ def download_video(folder_id, url, file_name, extension, thread_name, retry) -> 
 
                     # If not enough memory, download to disk
                     else:
-                        logger.debug(f"Downloading video from {url} to disk")
+                        logger.debug(
+                            f"Downloading video {file_name} from {url} to disk"
+                        )
 
                         # Create a temporary file with 'wb+' mode to read/write binary
                         temp_file = NamedTemporaryFile(
@@ -520,7 +573,10 @@ def download_video(folder_id, url, file_name, extension, thread_name, retry) -> 
                             0
                         )  # Move to the beginning of the file for reading
 
-                        logger.debug(f"Completed download to disk: {temp_file.name}")
+                        logger.debug(
+                            f"Completed download of {file_name} to disk: "
+                            f"{temp_file.name}"
+                        )
 
                         if temp_file:
                             try:
@@ -539,12 +595,21 @@ def download_video(folder_id, url, file_name, extension, thread_name, retry) -> 
                                 unlink(temp_file.name)
                                 return
                         else:
-                            logger.error("Failed to download video")
+                            logger.error(
+                                f"Failed to download video {file_name} from {url} "
+                                "to disk"
+                            )
                             return
                 else:
-                    logger.debug(f"Failed to download image from {url}")
+                    logger.warning(
+                        f"Failed to download video {file_name} from {url}: "
+                        f"status {response.status_code} (attempt {attempt + 1}/5)"
+                    )
             except Exception as e:
-                logger.debug(f"Failed to download image: {e}")
+                logger.warning(
+                    f"Failed to download video {file_name} from {url} "
+                    f"(attempt {attempt + 1}/5): {e}"
+                )
                 if attempt < 4:  # Don't sleep after last attempt
                     sleep(EXPONENTIAL_BACKOFF_DELAYS[attempt])
 
@@ -571,7 +636,10 @@ def download_video(folder_id, url, file_name, extension, thread_name, retry) -> 
             "after 5 attempts, and a retry of the function"
         )
     except Exception as e:
-        logger.error(f"Failed to download video: {e}")
+        logger.error(
+            f"Failed to download video {file_name} from {url} to folder "
+            f"{folder_id}: {e}"
+        )
 
 
 def find_file_name(pattern, url) -> str | None:
@@ -579,7 +647,7 @@ def find_file_name(pattern, url) -> str | None:
     try:
         return pattern.findall(url)[0].replace(" ", "_").replace("'", "\x27")
     except Exception as e:
-        logger.debug(f"Failed to find file name: {e}")
+        logger.warning(f"Failed to find file name from {url}: {e}")
     return None
 
 
@@ -587,7 +655,9 @@ def queue_file_downloads(thread_name, attachments, folder_id=None) -> None:
     """Queue the file downloads for images and videos."""
     try:
         thread_name = thread_name.replace("'", "\x27")
-        logger.debug(f"Thread Name: {thread_name}")
+        logger.debug(
+            f"Queueing {len(attachments)} attachment(s) for thread '{thread_name}'"
+        )
 
         # Check if the folder ID is provided, if not, check if it exists
         if folder_id is None:
@@ -595,10 +665,12 @@ def queue_file_downloads(thread_name, attachments, folder_id=None) -> None:
             if folder_id is None:
                 folder_id = create_folder(thread_name)
 
-        logger.info(f"FOLDER ID: {folder_id}")
+        logger.debug(f"Using folder {folder_id} for thread '{thread_name}'")
 
         if not folder_id:
-            logger.debug("Missing folder ID")
+            logger.warning(
+                f"No folder ID available for thread '{thread_name}', skipping downloads"
+            )
             return
 
         # Iterate through the attachments
@@ -614,7 +686,9 @@ def queue_file_downloads(thread_name, attachments, folder_id=None) -> None:
                 file_name = find_file_name(IMAGE_NAME_PATTERN, url_lower)
 
                 if file_name is None:
-                    logger.debug("Could not image file name")
+                    logger.warning(
+                        f"Could not find image file name in {attachment.url}"
+                    )
                     continue
 
                 logger.debug(f"Found image name: {file_name}")
@@ -637,7 +711,9 @@ def queue_file_downloads(thread_name, attachments, folder_id=None) -> None:
                 file_name = find_file_name(VIDEO_NAME_PATTERN, url_lower)
 
                 if file_name is None:
-                    logger.debug("Could not find video file name")
+                    logger.warning(
+                        f"Could not find video file name in {attachment.url}"
+                    )
                     continue
 
                 logger.debug(f"Found video name: {file_name}")
@@ -657,16 +733,19 @@ def queue_file_downloads(thread_name, attachments, folder_id=None) -> None:
             sleep(3)
 
     except Exception as e:
-        logger.error(f"Failed to queue image download: {e}")
+        logger.error(f"Failed to queue downloads for thread '{thread_name}': {e}")
 
 
 async def process_message(message, thread_name=None, folder_id=None) -> None:
     """Process the message and download images/videos."""
     if "no upload" not in message.content.lower() and message.attachments:
-        logger.debug(f"Recieved attachments: {message.attachments}")
+        logger.debug(f"Received attachments: {message.attachments}")
         if not thread_name:
             thread_name = message.channel.name
-        logger.info(f"Recieved message in {thread_name}")
+        logger.info(
+            f"Processing message {message.id} with "
+            f"{len(message.attachments)} attachment(s) in thread '{thread_name}'"
+        )
 
         EXECUTOR.submit(
             queue_file_downloads, thread_name, message.attachments, folder_id
@@ -720,7 +799,7 @@ async def on_message(message: message.Message) -> None:
     if isinstance(message.channel, Thread) and CHANNEL_NAME == str(
         message.channel.parent
     ):
-        logger.debug(f"Recieved message: {message.content}")
+        logger.debug(f"Received message: {message.content}")
         await process_message(message)
 
 
@@ -737,7 +816,9 @@ async def read_thread(interaction: Interaction, thread_id: str) -> None:
         # the bot is "thinking/processing"
         await interaction.response.defer(ephemeral=True)
 
-        logger.info(f"Reading thread command called with ID: {thread_id}")
+        logger.info(
+            f"User {interaction.user} invoked /threadimages for thread {thread_id}"
+        )
 
         # Fetch the thread using the provided thread ID
         thread = await bot.fetch_channel(int(thread_id))
@@ -759,6 +840,9 @@ async def read_thread(interaction: Interaction, thread_id: str) -> None:
                     await process_message(message)
         else:
             # If the channel is not a thread, send an error message
+            logger.warning(
+                f"Channel {thread_id} is not a thread (requested by {interaction.user})"
+            )
             await interaction.followup.send(
                 "The provided ID does not correspond to a thread.", ephemeral=True
             )
@@ -767,9 +851,14 @@ async def read_thread(interaction: Interaction, thread_id: str) -> None:
         await interaction.followup.send(
             "Thread not found. Please check the thread ID.", ephemeral=True
         )
-        logger.info(f"Thread not found {thread_id}")
+        logger.warning(
+            f"Thread {thread_id} not found (requested by {interaction.user})"
+        )
     except Exception as e:
-        logger.error(f"An error occurred: {e}")
+        logger.error(
+            f"/threadimages failed for thread {thread_id} "
+            f"(requested by {interaction.user}): {e}"
+        )
 
         # If any other error occurs, send an error message
         if not interaction.response.is_done():
@@ -792,7 +881,10 @@ async def read_message(
         # the bot is "thinking/processing"
         await interaction.response.defer(ephemeral=True)
 
-        logger.info(f"Reading message command called with ID: {message_id}")
+        logger.info(
+            f"User {interaction.user} invoked /messageimages for message "
+            f"{message_id} into folder '{folder_name}'"
+        )
 
         if not GUILD:
             raise Exception("Guild not found")
@@ -820,7 +912,10 @@ async def read_message(
                 )
                 continue  # Bot doesn't have permission to read this channel
             except ValueError as e:
-                logger.info(f"Given message id was not an integer: {e}")
+                logger.warning(
+                    f"Given message id is not an integer: {message_id} "
+                    f"(requested by {interaction.user}): {e}"
+                )
 
                 # If the message ID is not an integer, send an error message
                 await interaction.followup.send(
@@ -835,9 +930,15 @@ async def read_message(
             "permission to view the channel the message is in",
             ephemeral=True,
         )
-        logger.info("Message not found in any accessible channels.")
+        logger.warning(
+            f"Message {message_id} not found in any accessible channels "
+            f"(requested by {interaction.user})"
+        )
     except Exception as e:
-        logger.error(f"An error occurred: {e}")
+        logger.error(
+            f"/messageimages failed for message {message_id} into folder "
+            f"'{folder_name}' (requested by {interaction.user}): {e}"
+        )
 
         # If any other error occurs, send an error message
         if not interaction.response.is_done():
@@ -875,12 +976,13 @@ async def change_folder_command(interaction: Interaction, folder_id: str) -> Non
         elif interaction.guild is not None:
             member = await interaction.guild.fetch_member(interaction.user.id)
         else:
+            logger.warning(
+                f"User {interaction.user} attempted /changefolder to {folder_id} "
+                "outside a guild"
+            )
             await interaction.response.send_message(
                 "This command can only be used within a server.",
                 ephemeral=True,
-            )
-            logger.warning(
-                f"User {interaction.user} attempted restricted action outside a guild"
             )
             return
 
@@ -889,6 +991,10 @@ async def change_folder_command(interaction: Interaction, folder_id: str) -> Non
                 await interaction.response.defer(ephemeral=True)
 
                 if not check_parent_folder_id(folder_id):
+                    logger.warning(
+                        f"User {interaction.user} provided invalid folder ID "
+                        f"{folder_id} to /changefolder"
+                    )
                     await interaction.followup.send(
                         "Invalid folder ID provided.",
                         ephemeral=True,
@@ -903,22 +1009,30 @@ async def change_folder_command(interaction: Interaction, folder_id: str) -> Non
                     "Folder ID updated successfully!",
                     ephemeral=True,
                 )
-                logger.info(f"Folder ID changes by {interaction.user}")
+                logger.info(f"Folder ID changed to {folder_id} by {interaction.user}")
             else:
+                logger.warning(
+                    f"User {interaction.user} without role '{ROLE_NAME}' "
+                    f"attempted /changefolder to {folder_id}"
+                )
                 await interaction.response.send_message(
                     "You do not have the required role to perform this action.",
                     ephemeral=True,
                 )
         else:
+            logger.warning(
+                f"User {interaction.user} attempted /changefolder to {folder_id} "
+                "outside a guild"
+            )
             await interaction.response.send_message(
                 "This command can only be used within a server.",
                 ephemeral=True,
             )
-            logger.warning(
-                f"User {interaction.user} attempted restricted action outside a guild"
-            )
     except Exception as e:
-        logger.error(f"An error occurred in restricted_action: {e}")
+        logger.error(
+            f"/changefolder failed for folder {folder_id} "
+            f"(requested by {interaction.user}): {e}"
+        )
         if not interaction.response.is_done():
             await interaction.followup.send(
                 "An error occurred contact administrator", ephemeral=True
@@ -926,7 +1040,7 @@ async def change_folder_command(interaction: Interaction, folder_id: str) -> Non
 
 
 if __name__ == "__main__":
-    setup_logger(logger, getattr(INFO, LOG_LEVEL, INFO))
+    setup_logger(logger, getattr(logging, LOG_LEVEL, logging.INFO))
 
     # Authenticate Google Drive service
     SERVICE = authenticate_google_drive()
