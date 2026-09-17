@@ -373,16 +373,18 @@ def upload(
                     logger.debug(f"Failed to upload image: {e}")
                     if attempt < 4:  # Don't sleep after last attempt
                         sleep(EXPONENTIAL_BACKOFF_DELAYS[attempt])
-        else:
-            logger.error("No media data to upload")
-            return
 
-        # Check if the upload was successful
-        if uploaded_file:
-            logger.info(
-                f"Uploaded {file_name} to {thread_name}, "
-                f"File ID: {uploaded_file.get('id')}"
-            )
+            # Check if the upload was successful
+            if uploaded_file:
+                logger.info(
+                    f"Uploaded {file_name} ({file_type}) to thread '{thread_name}' "
+                    f"in folder {folder_id}, File ID: {uploaded_file.get('id')}"
+                )
+            else:
+                logger.error(
+                    f"Failed to upload {file_name} ({file_type}) to thread "
+                    f"'{thread_name}' in folder {folder_id} after retries"
+                )
         else:
             logger.warning(f"Failed to upload image: {file_name.upper()}")
         sleep(1)
@@ -390,7 +392,7 @@ def upload(
         logger.error(f"Failed to upload image: {e}")
 
 
-def download_image(url, file_name, folder_id, extension, thread_name) -> None:
+def download_image(url, file_name, folder_id, extension, thread_name, retry) -> None:
     try:
         logger.debug(f"Downloading image from {url}")
         for attempt in range(5):
@@ -430,12 +432,33 @@ def download_image(url, file_name, folder_id, extension, thread_name) -> None:
                 if attempt < 4:  # Don't sleep after last attempt
                     sleep(EXPONENTIAL_BACKOFF_DELAYS[attempt])
 
-        logger.error(f"Failed to download image: {url}")
+        if not retry:
+            # Readd current download to queue for 1 more additional attempt to download
+            # this image
+            EXECUTOR.submit(
+                download_image,
+                url,
+                file_name,
+                folder_id,
+                extension,
+                thread_name,
+                True,
+            )
+            logger.error(
+                f"Failed to download image {file_name} from {url} to folder "
+                f"{folder_id} after 5 attempts, readding the download to the queue"
+            )
+            return
+
+        logger.error(
+            f"Failed to download image {file_name} from {url} to folder {folder_id} "
+            "after 5 attempts, and a retry of the function"
+        )
     except Exception as e:
         logger.error(f"Failed to download image: {e}")
 
 
-def download_video(folder_id, url, file_name, extension, thread_name) -> None:
+def download_video(folder_id, url, file_name, extension, thread_name, retry) -> None:
     try:
         logger.debug(f"Downloading video from {url}")
 
@@ -524,6 +547,29 @@ def download_video(folder_id, url, file_name, extension, thread_name) -> None:
                 logger.debug(f"Failed to download image: {e}")
                 if attempt < 4:  # Don't sleep after last attempt
                     sleep(EXPONENTIAL_BACKOFF_DELAYS[attempt])
+
+        if not retry:
+            # Readd current download to queue for 1 more additional attempt to download
+            # this video
+            EXECUTOR.submit(
+                download_video,
+                folder_id,
+                url,
+                file_name,
+                extension,
+                thread_name,
+                True,
+            )
+            logger.error(
+                f"Failed to download video {file_name} from {url} to folder "
+                f"{folder_id} after 5 attempts, readding the download to the queue"
+            )
+            return
+
+        logger.error(
+            f"Failed to download video {file_name} from {url} to folder {folder_id} "
+            "after 5 attempts, and a retry of the function"
+        )
     except Exception as e:
         logger.error(f"Failed to download video: {e}")
 
@@ -581,6 +627,7 @@ def queue_file_downloads(thread_name, attachments, folder_id=None) -> None:
                     folder_id,
                     file_name.split(".")[-1],
                     thread_name,
+                    False,
                 )
 
             # Check if the URL contains video extensions
@@ -603,6 +650,7 @@ def queue_file_downloads(thread_name, attachments, folder_id=None) -> None:
                     file_name,
                     file_name.split(".")[-1],
                     thread_name,
+                    False,
                 )
 
             # Give time for folder and things to be created and completed
@@ -642,7 +690,12 @@ async def process_message(message, thread_name=None, folder_id=None) -> None:
 @bot.event
 async def on_ready() -> None:
     """Event triggered when the bot is ready."""
-    await bot.tree.sync()
+    try:
+        await bot.tree.sync()
+    except errors.HTTPException as e:
+        logger.error(f"Failed to start photo bot due to discord http exception: {e}")
+    except Exception as e:
+        logger.error(f"Failed to start photo bot with exception: {e}")
 
     global GUILD
     if GUILD_ID is None:
@@ -693,7 +746,7 @@ async def read_thread(interaction: Interaction, thread_id: str) -> None:
 
         # Check if the channel is a thread
         if isinstance(thread, Thread):
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 f"Reading messages in thread: {thread.name}",
                 ephemeral=True,
             )
