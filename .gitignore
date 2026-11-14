@@ -8,3 +8,8 @@ __pycache__/
 .vscode/
 config/
 .env
+
+# Hide pytest/coverage artifacts
+.coverage
+.pytest_cache/
+.ruff_cache/

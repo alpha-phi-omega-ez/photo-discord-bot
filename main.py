@@ -35,74 +35,24 @@ from requests import get, head
 from sentry_sdk.integrations.aiohttp import AioHttpIntegration
 from sentry_sdk.integrations.stdlib import StdlibIntegration
 
-# Load environment variables from .env file
-load_dotenv()
-
-# Setup Sentry
-sentry_sdk.init(
-    dsn=getenv("SENTRY_DSN", ""),
-    integrations=[
-        AioHttpIntegration(),  # For async HTTP requests
-        StdlibIntegration(),  # For threading-related error tracking
-    ],
-    traces_sample_rate=float(getenv("SENTRY_TRACE_RATE", 1.0)),
-)
-
 # Program variables
-DISCORD_TOKEN = getenv("DISCORD_TOKEN")
-CHANNEL_NAME = getenv("CHANNEL_NAME")
-SHARED_DRIVE_ID = getenv("SHARED_DRIVE_ID")
-GUILD_ID = getenv("GUILD_ID")
-VIDEO_IN_MEMORY = getenv("VIDEO_IN_MEMORY", "False").lower() == "true"
-DELEGATE_EMAIL = getenv("DELEGATE_EMAIL")
-LOG_LEVEL = getenv("LOG_LEVEL", "INFO").upper()
-ROLE_NAME = getenv("ROLE_NAME")
+DISCORD_TOKEN = None
+CHANNEL_NAME = None
+SHARED_DRIVE_ID = None
+GUILD_ID = None
+VIDEO_IN_MEMORY = False
+DELEGATE_EMAIL = None
+LOG_LEVEL = "INFO"
+ROLE_NAME = None
 PARENT_FOLDER_ID = None
 # Exponential backoff delays: 2s, 6s, 18s, 54s, 120s (capped)
 EXPONENTIAL_BACKOFF_DELAYS = [2.0, 6.0, 18.0, 54.0, 120.0]
 parent_folder_file = "config/parent_folder_id.txt"
-if os.path.exists(parent_folder_file):
-    print("Reading parent folder ID from file")
-    with open(parent_folder_file, "r") as f:
-        PARENT_FOLDER_ID = f.read().strip()
-else:
-    print("No parent folder ID file found, using environment variable")
-    PARENT_FOLDER_ID = getenv("PARENT_FOLDER_ID")
-
-# Exit if any critical variables are None
-if not all(
-    [
-        DISCORD_TOKEN,
-        PARENT_FOLDER_ID,
-        CHANNEL_NAME,
-        SHARED_DRIVE_ID,
-        GUILD_ID,
-        DELEGATE_EMAIL,
-        ROLE_NAME,
-    ]
-):
-    missing_vars = [
-        var
-        for var, value in {
-            "DISCORD_TOKEN": DISCORD_TOKEN,
-            "PARENT_FOLDER_ID": PARENT_FOLDER_ID,
-            "CHANNEL_NAME": CHANNEL_NAME,
-            "SHARED_DRIVE_ID": SHARED_DRIVE_ID,
-            "GUILD_ID": GUILD_ID,
-            "DELEGATE_EMAIL": DELEGATE_EMAIL,
-            "ROLE_NAME": ROLE_NAME,
-        }.items()
-        if not value
-    ]
-    print("Missing environment variables:", ", ".join(missing_vars))
-    exit(1)
-
 
 # Setup Discord intents
 intents = Intents.default()
 intents.message_content = True
 intents.guilds = True
-intents.message_content = True
 
 GUILD = None
 
@@ -1039,12 +989,78 @@ async def change_folder_command(interaction: Interaction, folder_id: str) -> Non
             )
 
 
-if __name__ == "__main__":
+def load_config() -> None:
+    """Load env vars and required config, raising ValueError on missing vars."""
+    global DISCORD_TOKEN, CHANNEL_NAME, SHARED_DRIVE_ID, GUILD_ID
+    global VIDEO_IN_MEMORY, DELEGATE_EMAIL, LOG_LEVEL, ROLE_NAME
+    global PARENT_FOLDER_ID
+
+    # Load environment variables from .env file
+    load_dotenv()
+
+    DISCORD_TOKEN = getenv("DISCORD_TOKEN")
+    CHANNEL_NAME = getenv("CHANNEL_NAME")
+    SHARED_DRIVE_ID = getenv("SHARED_DRIVE_ID")
+    GUILD_ID = getenv("GUILD_ID")
+    VIDEO_IN_MEMORY = getenv("VIDEO_IN_MEMORY", "False").lower() == "true"
+    DELEGATE_EMAIL = getenv("DELEGATE_EMAIL")
+    LOG_LEVEL = getenv("LOG_LEVEL", "INFO").upper()
+    ROLE_NAME = getenv("ROLE_NAME")
+
+    if os.path.exists(parent_folder_file):
+        print("Reading parent folder ID from file")
+        with open(parent_folder_file, "r") as f:
+            PARENT_FOLDER_ID = f.read().strip()
+    else:
+        print("No parent folder ID file found, using environment variable")
+        PARENT_FOLDER_ID = getenv("PARENT_FOLDER_ID")
+
+    # Raise if any critical variables are None
+    missing_vars = [
+        var
+        for var, value in {
+            "DISCORD_TOKEN": DISCORD_TOKEN,
+            "PARENT_FOLDER_ID": PARENT_FOLDER_ID,
+            "CHANNEL_NAME": CHANNEL_NAME,
+            "SHARED_DRIVE_ID": SHARED_DRIVE_ID,
+            "GUILD_ID": GUILD_ID,
+            "DELEGATE_EMAIL": DELEGATE_EMAIL,
+            "ROLE_NAME": ROLE_NAME,
+        }.items()
+        if not value
+    ]
+    if missing_vars:
+        raise ValueError("Missing environment variables: " + ", ".join(missing_vars))
+
+
+def init_sentry() -> None:
+    """Setup Sentry."""
+    sentry_sdk.init(
+        dsn=getenv("SENTRY_DSN", ""),
+        integrations=[
+            AioHttpIntegration(),  # For async HTTP requests
+            StdlibIntegration(),  # For threading-related error tracking
+        ],
+        traces_sample_rate=float(getenv("SENTRY_TRACE_RATE", 1.0)),
+    )
+
+
+def main() -> None:
+    global SERVICE
+
+    try:
+        load_config()
+    except ValueError as e:
+        print(e)
+        exit(1)
+
+    # Setup Sentry
+    init_sentry()
+
     setup_logger(logger, getattr(logging, LOG_LEVEL, logging.INFO))
 
     # Authenticate Google Drive service
     SERVICE = authenticate_google_drive()
-
     if not SERVICE:
         logger.error("Failed to authenticate Google Drive service")
         exit(1)
@@ -1055,3 +1071,7 @@ if __name__ == "__main__":
     else:
         logger.error("DISCORD_TOKEN is not set. Exiting.")
         exit(1)
+
+
+if __name__ == "__main__":
+    main()
