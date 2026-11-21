@@ -45,6 +45,11 @@ COPY main.py /app/main.py
 # Copy the virtual environment from the builder
 COPY --from=builder /app/.venv /app/.venv
 
+# Run as a non-root user; config/ is expected to be a writable host mount
+RUN useradd --system --create-home --uid 10001 appuser && \
+    chown -R appuser:appuser /app
+USER appuser
+
 # Set environment to use the installed packages
 ENV PATH="/app/.venv/bin:$PATH"
 ENV PYTHONUNBUFFERED=1
