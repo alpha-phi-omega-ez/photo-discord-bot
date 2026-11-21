@@ -40,12 +40,28 @@ dependencies = [
     "requests>=2.32.3",
     "requests-oauthlib>=2.0.0",
     "rsa>=4.9",
-    "ruff>=0.16.0",
     "sentry-sdk>=2.66.1",
     "uritemplate>=4.1.1",
     "urllib3>=2.7.0",
     "yarl>=1.24.5",
 ]
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio",
+    "pytest-cov",
+    "pytest-mock",
+    "pytest-randomly",
+    "responses",
+    "ruff>=0.16.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+addopts = "-ra --strict-markers"
 
 [tool.ruff]
 line-length = 88
