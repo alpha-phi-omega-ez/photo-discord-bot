@@ -126,3 +126,13 @@ def test_load_config_defaults_invalid_max_file_size(monkeypatch, tmp_path):
     main.load_config()
 
     assert main.MAX_FILE_SIZE_MB == 50
+
+
+@pytest.mark.parametrize("value", ["0", "-5"])
+def test_load_config_clamps_non_positive_max_file_size(monkeypatch, tmp_path, value):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("MAX_FILE_SIZE_MB", value)
+
+    main.load_config()
+
+    assert main.MAX_FILE_SIZE_MB == 50

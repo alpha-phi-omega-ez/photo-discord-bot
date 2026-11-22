@@ -41,20 +41,21 @@ def test_oversized_attachment_is_skipped(monkeypatch, caplog):
     assert "exceeds the 1 MB limit" in caplog.text
 
 
-def test_unsafe_folder_name_is_rejected(monkeypatch, caplog):
+def test_unsafe_folder_name_is_sanitized(monkeypatch, caplog):
     monkeypatch.setattr(main, "sleep", lambda _seconds: None)
     executor = MagicMock()
     monkeypatch.setattr(main, "EXECUTOR", executor)
 
-    with caplog.at_level(logging.WARNING):
+    with caplog.at_level(logging.INFO):
         main.queue_file_downloads(
             "bad'name",
             [_attachment("https://cdn.discordapp.com/a/photo.png", 10)],
             folder_id="folder-id",
         )
 
-    executor.submit.assert_not_called()
-    assert "Rejecting unsafe folder name" in caplog.text
+    executor.submit.assert_called_once()
+    assert executor.submit.call_args.args[5] == "bad_name"
+    assert "to 'bad_name'" in caplog.text
 
 
 def test_video_content_length_over_cap_is_rejected(monkeypatch):
@@ -69,6 +70,7 @@ def test_video_content_length_over_cap_is_rejected(monkeypatch):
 
     upload.assert_not_called()
     response.iter_content.assert_not_called()
+    response.close.assert_called_once()
 
 
 def test_video_mid_stream_abort_while_writing_to_disk(monkeypatch, caplog):
@@ -76,6 +78,11 @@ def test_video_mid_stream_abort_while_writing_to_disk(monkeypatch, caplog):
     response = _video_response(
         chunks=[b"a" * (600 * 1024), b"a" * (600 * 1024)],
     )
+    temp_file = MagicMock()
+    temp_file.name = "/tmp/partial-video.mp4"
+    monkeypatch.setattr(main, "NamedTemporaryFile", MagicMock(return_value=temp_file))
+    unlink = MagicMock()
+    monkeypatch.setattr(main, "unlink", unlink)
     monkeypatch.setattr(main, "get_file_size", lambda _url: None)
     monkeypatch.setattr(main, "get", MagicMock(return_value=response))
     upload = MagicMock()
@@ -85,6 +92,9 @@ def test_video_mid_stream_abort_while_writing_to_disk(monkeypatch, caplog):
         main.download_video("folder-id", URL, "clip.mp4", "mp4", "thread", True)
 
     upload.assert_not_called()
+    response.close.assert_called_once()
+    temp_file.close.assert_called_once()
+    unlink.assert_called_once_with("/tmp/partial-video.mp4")
     assert "exceeded the 1 MB limit mid-stream" in caplog.text
 
 
@@ -104,6 +114,7 @@ def test_video_mid_stream_abort_while_writing_to_memory(monkeypatch, caplog):
         main.download_video("folder-id", URL, "clip.mp4", "mp4", "thread", True)
 
     upload.assert_not_called()
+    response.close.assert_called_once()
     assert "exceeded the 1 MB limit mid-stream" in caplog.text
 
 

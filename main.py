@@ -53,8 +53,9 @@ parent_folder_file = "config/parent_folder_id.txt"
 REQUEST_TIMEOUT = (5, 30)
 # Maximum accepted download size per file; overridable through MAX_FILE_SIZE_MB
 MAX_FILE_SIZE_MB = 50
-# Defense-in-depth allowlist for folder names derived from Discord threads
-FOLDER_NAME_PATTERN = re_compile(r"[\w\- ]{1,100}")
+# Drive folder names derived from thread names are sanitized onto this charset
+UNSAFE_FOLDER_CHARS = re_compile(r"[^\w\- ]+")
+REPEATED_UNDERSCORES = re_compile(r"_{2,}")
 
 # Setup Discord intents
 intents = Intents.default()
@@ -133,6 +134,14 @@ def escape_drive_query_value(value: str) -> str:
     return value.replace("\\", "\\\\").replace("'", "\\'")
 
 
+def sanitize_folder_name(name: str) -> str:
+    """Deterministically map a thread name onto the Drive folder charset."""
+    safe_name = UNSAFE_FOLDER_CHARS.sub("_", name or "")
+    safe_name = REPEATED_UNDERSCORES.sub("_", safe_name).strip(" _")
+    safe_name = safe_name[:100].rstrip(" _")
+    return safe_name or "attachments"
+
+
 def ensure_guild(interaction: Interaction) -> bool:
     """Return True only when the interaction comes from the configured guild."""
     guild = getattr(interaction, "guild", None)
@@ -207,7 +216,8 @@ def check_parent_folder_id(folder_id: str) -> bool:
         return True
     except Exception as e:
         logger.warning(
-            f"Invalid folder ID provided: {_safe_log_value(folder_id)} - {e}"
+            f"Invalid folder ID provided: {_safe_log_value(folder_id)} - "
+            f"{_safe_exception(e)}"
         )
     return False
 
@@ -430,8 +440,8 @@ def upload(
         sleep(1)
     except Exception as e:
         logger.error(
-            f"Failed to queue downloads for thread '{safe_thread_name}': "
-            f"{_safe_exception(e)}"
+            f"Failed to upload {safe_file_name} to thread '{safe_thread_name}' "
+            f"in folder {folder_id}: {_safe_exception(e)}"
         )
 
 
@@ -557,6 +567,7 @@ def download_video(folder_id, url, file_name, extension, thread_name, retry) -> 
                                     f"{public_url}: {response_size} bytes exceeds "
                                     f"the {MAX_FILE_SIZE_MB} MB limit"
                                 )
+                                response.close()
                                 return
                         except (TypeError, ValueError):
                             pass
@@ -583,6 +594,7 @@ def download_video(folder_id, url, file_name, extension, thread_name, retry) -> 
                                     f"{public_url}: exceeded the "
                                     f"{MAX_FILE_SIZE_MB} MB limit mid-stream"
                                 )
+                                response.close()
                                 return
                             video_stream.write(chunk)
 
@@ -626,6 +638,7 @@ def download_video(folder_id, url, file_name, extension, thread_name, retry) -> 
                                     f"{public_url}: exceeded the "
                                     f"{MAX_FILE_SIZE_MB} MB limit mid-stream"
                                 )
+                                response.close()
                                 temp_file.close()
                                 unlink(temp_file.name)
                                 return
@@ -712,19 +725,24 @@ def find_file_name(pattern, url) -> str | None:
     try:
         return pattern.findall(url)[0].replace(" ", "_")
     except Exception as e:
-        logger.warning(f"Failed to find file name from {_public_url(url)}: {e}")
+        logger.warning(
+            f"Failed to find file name from {_public_url(url)}: {_safe_exception(e)}"
+        )
     return None
 
 
 def queue_file_downloads(thread_name, attachments, folder_id=None) -> None:
     """Queue the file downloads for images and videos."""
-    safe_thread_name = _safe_log_value(thread_name)
+    raw_thread_name = thread_name
+    safe_thread_name = _safe_log_value(raw_thread_name)
     try:
-        if not FOLDER_NAME_PATTERN.fullmatch(thread_name):
-            logger.warning(
-                f"Rejecting unsafe folder name '{safe_thread_name}', skipping downloads"
+        # Thread names can contain characters Drive rejects in folder names;
+        # map them onto the safe charset instead of skipping the upload.
+        thread_name = sanitize_folder_name(raw_thread_name)
+        if thread_name != raw_thread_name:
+            logger.info(
+                f"Sanitized folder name '{safe_thread_name}' to '{thread_name}'"
             )
-            return
 
         logger.debug(
             f"Queueing {len(attachments)} attachment(s) for thread '{safe_thread_name}'"
@@ -987,6 +1005,9 @@ async def read_message(
 
     safe_message_id = _safe_log_value(message_id)
     safe_folder_name = _safe_log_value(folder_name)
+    folder_name = sanitize_folder_name(folder_name)
+    if folder_name != safe_folder_name:
+        logger.info(f"Sanitized folder name '{safe_folder_name}' to '{folder_name}'")
     try:
         # Defer the initial response, alter discord to show that
         # the bot is "thinking/processing"
@@ -1181,6 +1202,9 @@ def load_config() -> None:
     try:
         MAX_FILE_SIZE_MB = int(getenv("MAX_FILE_SIZE_MB", "50"))
     except ValueError:
+        MAX_FILE_SIZE_MB = 50
+    if MAX_FILE_SIZE_MB < 1:
+        logger.warning("MAX_FILE_SIZE_MB must be positive, falling back to 50")
         MAX_FILE_SIZE_MB = 50
 
     if os.path.exists(parent_folder_file):
