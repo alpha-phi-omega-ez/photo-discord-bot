@@ -40,10 +40,14 @@ WORKDIR /app
 COPY --from=builder /runtime-libs/ /usr/lib/aarch64-linux-gnu/
 COPY --from=builder /runtime-libs/ /usr/lib/x86_64-linux-gnu/
 
-COPY main.py /app/main.py
+COPY --chown=10001:10001 main.py /app/main.py
 
 # Copy the virtual environment from the builder
-COPY --from=builder /app/.venv /app/.venv
+COPY --from=builder --chown=10001:10001 /app/.venv /app/.venv
+
+# Run as a numeric non-root user; the runtime image has no shell/useradd.
+# config/ is expected to be a writable host mount owned by UID 10001.
+USER 10001:10001
 
 # Set environment to use the installed packages
 ENV PATH="/app/.venv/bin:$PATH"

@@ -40,6 +40,7 @@ MODULE_STATE_GLOBALS = (
     "SERVICE",
     "GUILD",
     "parent_folder_file",
+    "MAX_FILE_SIZE_MB",
 )
 
 

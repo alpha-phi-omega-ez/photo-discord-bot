@@ -28,6 +28,11 @@ add the pin first:
   (``upload``) -> Phase 3.
 - ``finally`` block containing a ``return`` swallows upload failures in
   the disk-backed video path (``download_video``) -> Phase 3.
+
+Fixed in Phase 2 (tests added, no xfail needed):
+
 - Missing ``requests`` timeouts let downloads hang the single worker
-  (``get_file_size``, ``download_image``, ``download_video``) -> Phase 2.
+  (``get_file_size``, ``download_image``, ``download_video``): every
+  request now passes ``REQUEST_TIMEOUT`` (``tests/test_size_caps.py``,
+  ``tests/test_get_file_size.py``).
 """

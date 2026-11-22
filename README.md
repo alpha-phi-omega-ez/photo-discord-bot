@@ -27,9 +27,10 @@ The project requires some environment variables to be created, you can set them 
 | `PARENT_FOLDER_ID` | None | Folder Drive ID for the folder where images/videos will be uploaded |
 | `LOG_LEVEL` | `INFO` | Set the log level for the application, defaults to INFO |
 | `VIDEO_IN_MEMORY` | false | Boolean to enable the downloading and storing of videos in memory for quicker IO operations | 
-| `DELEGATE_EMAIL` | None | The program runs on behalf of an email, so pass in an email that has access to the shared drive/folders where images/videos will be uploaded | 
-| `SENTRY_DSN` | None | Set the sentry DSN | 
-| `SENTRY_TRACE_RATE` | `1.0` | Set the sentry trace rate | 
+| `DELEGATE_EMAIL` | None | The program runs on behalf of an email, so pass in an email that has access to the shared drive/folders where images/videos will be uploaded |
+| `MAX_FILE_SIZE_MB` | `50` | Maximum size of a single image/video download in megabytes |
+| `SENTRY_DSN` | None | Set the sentry DSN |
+| `SENTRY_TRACE_RATE` | `0.2` | Set the sentry trace rate |
 
 uv installs packages in a virtual environment and handles everything so you just need to use uv to run the python files.
 
@@ -59,6 +60,8 @@ ruff format
 ## Deployment
 
 This project is currently deployed with Docker. On commit to the main branch GitHub actions builds and pushes new versions of the Docker image to the [photo-discord-bot packages](https://github.com/alpha-phi-omega-ez/photo-discord-bot/pkgs/container/photo-discord-bot)
+
+The runtime container runs as the numeric non-root user UID 10001. Mount `config/` read/write and make sure it is writable by UID 10001, because `/changefolder` rewrites `config/parent_folder_id.txt`; the service-account JSON is only read.
 
 ## Authors
 

@@ -1,5 +1,7 @@
 """Tests for the Phase 1 importability refactor: load_config and main()."""
 
+from unittest.mock import MagicMock
+
 import pytest
 
 import main
@@ -84,3 +86,43 @@ def test_main_loads_config_then_starts_bot(monkeypatch, tmp_path):
 
     assert main.SERVICE == "drive-service-mock"
     assert calls == ["sentry", "logger", ("run", "test-discord-token")]
+
+
+def test_init_sentry_is_noop_without_dsn(monkeypatch):
+    monkeypatch.delenv("SENTRY_DSN", raising=False)
+    init = MagicMock()
+    monkeypatch.setattr(main.sentry_sdk, "init", init)
+
+    main.init_sentry()
+
+    init.assert_not_called()
+
+
+def test_init_sentry_uses_safer_default_trace_rate(monkeypatch):
+    monkeypatch.setenv("SENTRY_DSN", "https://public@example.ingest.sentry.io/1")
+    monkeypatch.delenv("SENTRY_TRACE_RATE", raising=False)
+    init = MagicMock()
+    monkeypatch.setattr(main.sentry_sdk, "init", init)
+
+    main.init_sentry()
+
+    assert init.call_args.kwargs["dsn"] == ("https://public@example.ingest.sentry.io/1")
+    assert init.call_args.kwargs["traces_sample_rate"] == 0.2
+
+
+def test_load_config_reads_max_file_size(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("MAX_FILE_SIZE_MB", "12")
+
+    main.load_config()
+
+    assert main.MAX_FILE_SIZE_MB == 12
+
+
+def test_load_config_defaults_invalid_max_file_size(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("MAX_FILE_SIZE_MB", "not-a-number")
+
+    main.load_config()
+
+    assert main.MAX_FILE_SIZE_MB == 50

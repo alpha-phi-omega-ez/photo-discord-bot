@@ -49,6 +49,13 @@ PARENT_FOLDER_ID = None
 EXPONENTIAL_BACKOFF_DELAYS = [2.0, 6.0, 18.0, 54.0, 120.0]
 parent_folder_file = "config/parent_folder_id.txt"
 
+# Network bounds: connect and read timeouts (seconds) for every external request
+REQUEST_TIMEOUT = (5, 30)
+# Maximum accepted download size per file; overridable through MAX_FILE_SIZE_MB
+MAX_FILE_SIZE_MB = 50
+# Defense-in-depth allowlist for folder names derived from Discord threads
+FOLDER_NAME_PATTERN = re_compile(r"[\w\- ]{1,100}")
+
 # Setup Discord intents
 intents = Intents.default()
 intents.message_content = True
@@ -102,23 +109,57 @@ def setup_logger(logger_setup: Logger, log_level=INFO) -> None:
     logger_setup.addHandler(handler)
 
 
+def _public_url(url: str) -> str:
+    """Strip signed query parameters so CDN bearer tokens never hit logs."""
+    return url.split("?", 1)[0]
+
+
+def _safe_log_value(value: Any) -> str:
+    """Remove newlines from user-controlled text before logging it."""
+    return str(value).replace("\r", "").replace("\n", "")
+
+
+def _safe_exception(error: Exception) -> str:
+    """Strip signed URL query strings and newlines from exception messages."""
+    return _safe_log_value(_public_url(str(error)))
+
+
+def escape_drive_query_value(value: str) -> str:
+    r"""Escape a value for use inside a Google Drive ``q`` string literal.
+
+    Drive's query syntax treats backslash as the escape character, so
+    backslashes must be escaped before quotes.
+    """
+    return value.replace("\\", "\\\\").replace("'", "\\'")
+
+
+def ensure_guild(interaction: Interaction) -> bool:
+    """Return True only when the interaction comes from the configured guild."""
+    guild = getattr(interaction, "guild", None)
+    return guild is not None and str(guild.id) == str(GUILD_ID)
+
+
 def get_file_size(url: str) -> int | None:
     """Returns the file size in bytes from a URL."""
+    public_url = _public_url(url)
     try:
-        response = head(url)
+        response = head(url, timeout=REQUEST_TIMEOUT)
         if response.status_code == 200 and "Content-Length" in response.headers:
             logger.debug(
-                f"File size for {url}: {response.headers['Content-Length']} bytes"
+                f"File size for {public_url}: "
+                f"{response.headers['Content-Length']} bytes"
             )
             return int(response.headers["Content-Length"])
         else:
             logger.warning(
-                f"Could not retrieve file size for {url} "
+                f"Could not retrieve file size for {public_url} "
                 f"(status {response.status_code}, no Content-Length)"
             )
             return None
     except Exception as e:
-        logger.warning(f"Failed to get file size for {url}: {e}")
+        logger.warning(
+            f"Failed to get file size for {public_url}: {_safe_exception(e)}"
+        )
         return None
 
 
@@ -129,6 +170,11 @@ def is_memory_available(file_size: int) -> bool:
     logger.debug(f"Available memory: {available_memory}")
 
     return (available_memory - 20000) > file_size
+
+
+def _max_file_size_bytes() -> int:
+    """Return the configured download size cap in bytes."""
+    return MAX_FILE_SIZE_MB * 1024 * 1024
 
 
 def authenticate_google_drive() -> Any:
@@ -160,16 +206,20 @@ def check_parent_folder_id(folder_id: str) -> bool:
         )
         return True
     except Exception as e:
-        logger.warning(f"Invalid folder ID provided: {folder_id} - {e}")
+        logger.warning(
+            f"Invalid folder ID provided: {_safe_log_value(folder_id)} - {e}"
+        )
     return False
 
 
 def check_folder_exists(folder_name: str) -> str | None:
+    safe_folder_name = _safe_log_value(folder_name)
+    escaped_folder_name = escape_drive_query_value(folder_name)
     try:
         if not SERVICE:
             raise Exception("Google Drive service not authenticated")
 
-        logger.debug(f"Searching for folder: {folder_name}")
+        logger.debug(f"Searching for folder: {safe_folder_name}")
 
         response = None
         for attempt in range(5):
@@ -180,7 +230,10 @@ def check_folder_exists(folder_name: str) -> str | None:
                     SERVICE.files()
                     .list(
                         # Query to filter by folder parent ID and name
-                        q=f"'{PARENT_FOLDER_ID}' in parents and name='{folder_name}'",
+                        q=(
+                            f"'{PARENT_FOLDER_ID}' in parents and "
+                            f"name='{escaped_folder_name}'"
+                        ),
                         corpora="drive",
                         driveId=SHARED_DRIVE_ID,
                         includeItemsFromAllDrives=True,
@@ -191,7 +244,7 @@ def check_folder_exists(folder_name: str) -> str | None:
                 break
             except Exception as e:
                 logger.warning(
-                    f"Failed to find folder '{folder_name}' "
+                    f"Failed to find folder '{safe_folder_name}' "
                     f"(attempt {attempt + 1}/5): {e}"
                 )
                 if attempt < 4:  # Don't sleep after last attempt
@@ -200,21 +253,22 @@ def check_folder_exists(folder_name: str) -> str | None:
         # Check if the folder exists in the response
         if response is None:
             logger.error(
-                f"Failed to find folder '{folder_name}' in parent {PARENT_FOLDER_ID} "
-                "after retries"
+                f"Failed to find folder '{safe_folder_name}' in parent "
+                f"{PARENT_FOLDER_ID} after retries"
             )
             return None
         folders = response.get("files", [])
         if folders:
             return folders[0].get("id")
 
-        logger.info(f"Folder '{folder_name}' does not exist yet")
+        logger.info(f"Folder '{safe_folder_name}' does not exist yet")
     except Exception as e:
-        logger.error(f"Failed to find folder '{folder_name}': {e}")
+        logger.error(f"Failed to find folder '{safe_folder_name}': {e}")
     return None
 
 
 def create_folder(folder_name) -> str | None:
+    safe_folder_name = _safe_log_value(folder_name)
     try:
         if not SERVICE:
             raise Exception("Google Drive service not authenticated")
@@ -226,7 +280,7 @@ def create_folder(folder_name) -> str | None:
             "parents": [PARENT_FOLDER_ID],  # Set the parent folder in the shared drive
         }
 
-        logger.debug(f"Creating folder: {folder_name}")
+        logger.debug(f"Creating folder: {safe_folder_name}")
 
         new_folder = None
         for attempt in range(5):
@@ -244,7 +298,7 @@ def create_folder(folder_name) -> str | None:
                 break
             except Exception as e:
                 logger.warning(
-                    f"Failed to create folder '{folder_name}' "
+                    f"Failed to create folder '{safe_folder_name}' "
                     f"(attempt {attempt + 1}/5): {e}"
                 )
                 if attempt < 4:  # Don't sleep after last attempt
@@ -252,23 +306,24 @@ def create_folder(folder_name) -> str | None:
 
         if new_folder:
             logger.info(
-                f"Created folder '{folder_name}' ({new_folder.get('id')}) "
+                f"Created folder '{safe_folder_name}' ({new_folder.get('id')}) "
                 f"in parent {PARENT_FOLDER_ID}"
             )
             return new_folder.get("id")
 
         logger.error(
-            f"Failed to create folder '{folder_name}' after retries "
+            f"Failed to create folder '{safe_folder_name}' after retries "
             f"in parent {PARENT_FOLDER_ID}"
         )
     except Exception as e:
-        logger.error(f"Failed to create folder '{folder_name}': {e}")
+        logger.error(f"Failed to create folder '{safe_folder_name}': {e}")
     return None
 
 
 def convert_to_jpeg(image_data, file_name, extension):
+    safe_file_name = _safe_log_value(file_name)
     try:
-        logger.debug(f"Converting HEIC/HEIF image {file_name} ({extension})")
+        logger.debug(f"Converting HEIC/HEIF image {safe_file_name} ({extension})")
         heif_file = pyheif_read(BytesIO(image_data))
 
         # Convert to a Pillow Image object
@@ -288,12 +343,13 @@ def convert_to_jpeg(image_data, file_name, extension):
         new_extension = "jpeg"
         new_file_name = file_name.replace("heic", "jpeg")
 
-        logger.debug(f"Converted HEIC/HEIF image {file_name} to {new_file_name}")
+        logger.debug(f"Converted HEIC/HEIF image {safe_file_name} to {new_file_name}")
 
         return new_image_data, new_file_name, new_extension
     except Exception as e:
         logger.warning(
-            f"Failed to convert HEIC/HEIF image {file_name}, uploading original: {e}"
+            f"Failed to convert HEIC/HEIF image {safe_file_name}, "
+            f"uploading original: {e}"
         )
         return image_data, file_name, extension
 
@@ -301,6 +357,8 @@ def convert_to_jpeg(image_data, file_name, extension):
 def upload(
     folder_id, stream_data, file_name, extension, thread_name, file_type, file_path=None
 ) -> None:
+    safe_file_name = _safe_log_value(file_name)
+    safe_thread_name = _safe_log_value(thread_name)
     try:
         if not SERVICE:
             raise Exception("Google Drive service not authenticated")
@@ -345,8 +403,9 @@ def upload(
                     break
                 except Exception as e:
                     logger.warning(
-                        f"Failed to upload {file_name} to folder {folder_id} "
-                        f"(thread '{thread_name}', attempt {attempt + 1}/5): {e}"
+                        f"Failed to upload {safe_file_name} to folder {folder_id} "
+                        f"(thread '{safe_thread_name}', attempt "
+                        f"{attempt + 1}/5): {e}"
                     )
                     if attempt < 4:  # Don't sleep after last attempt
                         sleep(EXPONENTIAL_BACKOFF_DELAYS[attempt])
@@ -354,44 +413,48 @@ def upload(
             # Check if the upload was successful
             if uploaded_file:
                 logger.info(
-                    f"Uploaded {file_name} ({file_type}) to thread '{thread_name}' "
-                    f"in folder {folder_id}, File ID: {uploaded_file.get('id')}"
+                    f"Uploaded {safe_file_name} ({file_type}) to thread "
+                    f"'{safe_thread_name}' in folder {folder_id}, "
+                    f"File ID: {uploaded_file.get('id')}"
                 )
             else:
                 logger.error(
-                    f"Failed to upload {file_name} ({file_type}) to thread "
-                    f"'{thread_name}' in folder {folder_id} after retries"
+                    f"Failed to upload {safe_file_name} ({file_type}) to thread "
+                    f"'{safe_thread_name}' in folder {folder_id} after retries"
                 )
         else:
             logger.error(
-                f"No media data to upload for {file_name} to thread "
-                f"'{thread_name}' in folder {folder_id}"
+                f"No media data to upload for {safe_file_name} to thread "
+                f"'{safe_thread_name}' in folder {folder_id}"
             )
         sleep(1)
     except Exception as e:
         logger.error(
-            f"Failed to upload {file_name} to thread '{thread_name}' "
-            f"in folder {folder_id}: {e}"
+            f"Failed to queue downloads for thread '{safe_thread_name}': "
+            f"{_safe_exception(e)}"
         )
 
 
 def download_image(url, file_name, folder_id, extension, thread_name, retry) -> None:
+    public_url = _public_url(url)
+    safe_file_name = _safe_log_value(file_name)
+    safe_thread_name = _safe_log_value(thread_name)
     try:
         logger.debug(
-            f"Downloading image {file_name} from {url} to folder {folder_id} "
-            f"(thread '{thread_name}')"
+            f"Downloading image {safe_file_name} from {public_url} to folder "
+            f"{folder_id} (thread '{safe_thread_name}')"
         )
         for attempt in range(5):
             try:
                 # Request the image data
-                response = get(url)
-                logger.debug(f"Response {url}: {response.status_code}")
+                response = get(url, timeout=REQUEST_TIMEOUT)
+                logger.debug(f"Response {public_url}: {response.status_code}")
 
                 if response.status_code == 200:
                     # Get the image data
                     image_data = response.content
 
-                    logger.debug(f"Downloaded image {file_name} from {url}")
+                    logger.debug(f"Downloaded image {safe_file_name} from {public_url}")
 
                     # Check if the image is HEIC/HEIF and convert to JPEG
                     if "heic" == extension or "heif" == extension:
@@ -413,14 +476,14 @@ def download_image(url, file_name, folder_id, extension, thread_name, retry) -> 
                     return
                 else:
                     logger.warning(
-                        f"Failed to download image {file_name} from {url}: "
-                        f"status {response.status_code} "
+                        f"Failed to download image {safe_file_name} from "
+                        f"{public_url}: status {response.status_code} "
                         f"(attempt {attempt + 1}/5)"
                     )
             except Exception as e:
                 logger.warning(
-                    f"Failed to download image {file_name} from {url} "
-                    f"(attempt {attempt + 1}/5): {e}"
+                    f"Failed to download image {safe_file_name} from {public_url} "
+                    f"(attempt {attempt + 1}/5): {_safe_exception(e)}"
                 )
                 if attempt < 4:  # Don't sleep after last attempt
                     sleep(EXPONENTIAL_BACKOFF_DELAYS[attempt])
@@ -438,27 +501,32 @@ def download_image(url, file_name, folder_id, extension, thread_name, retry) -> 
                 True,
             )
             logger.error(
-                f"Failed to download image {file_name} from {url} to folder "
-                f"{folder_id} after 5 attempts, readding the download to the queue"
+                f"Failed to download image {safe_file_name} from {public_url} to "
+                f"folder {folder_id} after 5 attempts, readding the download to "
+                "the queue"
             )
             return
 
         logger.error(
-            f"Failed to download image {file_name} from {url} to folder {folder_id} "
-            "after 5 attempts, and a retry of the function"
+            f"Failed to download image {safe_file_name} from {public_url} to folder "
+            f"{folder_id} after 5 attempts, and a retry of the function"
         )
     except Exception as e:
         logger.error(
-            f"Failed to download image {file_name} from {url} to folder "
-            f"{folder_id}: {e}"
+            f"Failed to download image {safe_file_name} from {public_url} to folder "
+            f"{folder_id}: {_safe_exception(e)}"
         )
 
 
 def download_video(folder_id, url, file_name, extension, thread_name, retry) -> None:
+    public_url = _public_url(url)
+    safe_file_name = _safe_log_value(file_name)
+    safe_thread_name = _safe_log_value(thread_name)
+    max_size = _max_file_size_bytes()
     try:
         logger.debug(
-            f"Downloading video {file_name} from {url} to folder {folder_id} "
-            f"(thread '{thread_name}')"
+            f"Downloading video {safe_file_name} from {public_url} to folder "
+            f"{folder_id} (thread '{safe_thread_name}')"
         )
 
         for attempt in range(5):
@@ -466,32 +534,64 @@ def download_video(folder_id, url, file_name, extension, thread_name, retry) -> 
                 # Get the file size from the URL
                 file_size = get_file_size(url)
 
-                logger.debug(f"File size for {url}: {file_size} bytes")
+                logger.debug(f"File size for {public_url}: {file_size} bytes")
+
+                if file_size and file_size > max_size:
+                    logger.warning(
+                        f"Skipping video {safe_file_name} from {public_url}: "
+                        f"{file_size} bytes exceeds the {MAX_FILE_SIZE_MB} MB limit"
+                    )
+                    return
 
                 # Request the video data
-                response = get(url, stream=True)
-                logger.debug(f"Response {url}: {response.status_code}")
+                response = get(url, stream=True, timeout=REQUEST_TIMEOUT)
+                logger.debug(f"Response {public_url}: {response.status_code}")
 
                 if response.status_code == 200:
-                    logger.debug(f"Downloaded video {file_name} from {url}")
+                    response_size = response.headers.get("Content-Length")
+                    if response_size is not None:
+                        try:
+                            if int(response_size) > max_size:
+                                logger.warning(
+                                    f"Skipping video {safe_file_name} from "
+                                    f"{public_url}: {response_size} bytes exceeds "
+                                    f"the {MAX_FILE_SIZE_MB} MB limit"
+                                )
+                                return
+                        except (TypeError, ValueError):
+                            pass
+
+                    logger.debug(f"Downloaded video {safe_file_name} from {public_url}")
 
                     # Check if the file size is available and if memory is available
                     if VIDEO_IN_MEMORY and file_size and is_memory_available(file_size):
                         logger.debug(
-                            f"Downloading video {file_name} from {url} to memory"
+                            f"Downloading video {safe_file_name} from {public_url} "
+                            "to memory"
                         )
 
                         # Use BytesIO as an in-memory file to store the download stream
                         video_stream = BytesIO()
+                        downloaded = 0
 
                         # Write the video content to the stream in chunks
                         for chunk in response.iter_content(chunk_size=8192):
+                            downloaded += len(chunk)
+                            if downloaded > max_size:
+                                logger.warning(
+                                    f"Aborting video {safe_file_name} from "
+                                    f"{public_url}: exceeded the "
+                                    f"{MAX_FILE_SIZE_MB} MB limit mid-stream"
+                                )
+                                return
                             video_stream.write(chunk)
 
                         # Reset the stream position to the start
                         video_stream.seek(0)
 
-                        logger.debug(f"Completed download of {file_name} to memory")
+                        logger.debug(
+                            f"Completed download of {safe_file_name} to memory"
+                        )
 
                         upload(
                             folder_id,
@@ -506,7 +606,8 @@ def download_video(folder_id, url, file_name, extension, thread_name, retry) -> 
                     # If not enough memory, download to disk
                     else:
                         logger.debug(
-                            f"Downloading video {file_name} from {url} to disk"
+                            f"Downloading video {safe_file_name} from {public_url} "
+                            "to disk"
                         )
 
                         # Create a temporary file with 'wb+' mode to read/write binary
@@ -514,8 +615,20 @@ def download_video(folder_id, url, file_name, extension, thread_name, retry) -> 
                             delete=False, suffix=f".{extension}"
                         )
 
+                        downloaded = 0
+
                         # Write the video content to the temp file in chunks
                         for chunk in response.iter_content(chunk_size=8192):
+                            downloaded += len(chunk)
+                            if downloaded > max_size:
+                                logger.warning(
+                                    f"Aborting video {safe_file_name} from "
+                                    f"{public_url}: exceeded the "
+                                    f"{MAX_FILE_SIZE_MB} MB limit mid-stream"
+                                )
+                                temp_file.close()
+                                unlink(temp_file.name)
+                                return
                             temp_file.write(chunk)
 
                         temp_file.flush()  # Ensure all data is written
@@ -524,7 +637,7 @@ def download_video(folder_id, url, file_name, extension, thread_name, retry) -> 
                         )  # Move to the beginning of the file for reading
 
                         logger.debug(
-                            f"Completed download of {file_name} to disk: "
+                            f"Completed download of {safe_file_name} to disk: "
                             f"{temp_file.name}"
                         )
 
@@ -546,19 +659,20 @@ def download_video(folder_id, url, file_name, extension, thread_name, retry) -> 
                                 return
                         else:
                             logger.error(
-                                f"Failed to download video {file_name} from {url} "
-                                "to disk"
+                                f"Failed to download video {safe_file_name} from "
+                                f"{public_url} to disk"
                             )
                             return
                 else:
                     logger.warning(
-                        f"Failed to download video {file_name} from {url}: "
-                        f"status {response.status_code} (attempt {attempt + 1}/5)"
+                        f"Failed to download video {safe_file_name} from "
+                        f"{public_url}: status {response.status_code} "
+                        f"(attempt {attempt + 1}/5)"
                     )
             except Exception as e:
                 logger.warning(
-                    f"Failed to download video {file_name} from {url} "
-                    f"(attempt {attempt + 1}/5): {e}"
+                    f"Failed to download video {safe_file_name} from {public_url} "
+                    f"(attempt {attempt + 1}/5): {_safe_exception(e)}"
                 )
                 if attempt < 4:  # Don't sleep after last attempt
                     sleep(EXPONENTIAL_BACKOFF_DELAYS[attempt])
@@ -576,37 +690,44 @@ def download_video(folder_id, url, file_name, extension, thread_name, retry) -> 
                 True,
             )
             logger.error(
-                f"Failed to download video {file_name} from {url} to folder "
-                f"{folder_id} after 5 attempts, readding the download to the queue"
+                f"Failed to download video {safe_file_name} from {public_url} to "
+                f"folder {folder_id} after 5 attempts, readding the download to "
+                "the queue"
             )
             return
 
         logger.error(
-            f"Failed to download video {file_name} from {url} to folder {folder_id} "
-            "after 5 attempts, and a retry of the function"
+            f"Failed to download video {safe_file_name} from {public_url} to folder "
+            f"{folder_id} after 5 attempts, and a retry of the function"
         )
     except Exception as e:
         logger.error(
-            f"Failed to download video {file_name} from {url} to folder "
-            f"{folder_id}: {e}"
+            f"Failed to download video {safe_file_name} from {public_url} to folder "
+            f"{folder_id}: {_safe_exception(e)}"
         )
 
 
 def find_file_name(pattern, url) -> str | None:
     """Find the file name from the URL using regex pattern."""
     try:
-        return pattern.findall(url)[0].replace(" ", "_").replace("'", "\x27")
+        return pattern.findall(url)[0].replace(" ", "_")
     except Exception as e:
-        logger.warning(f"Failed to find file name from {url}: {e}")
+        logger.warning(f"Failed to find file name from {_public_url(url)}: {e}")
     return None
 
 
 def queue_file_downloads(thread_name, attachments, folder_id=None) -> None:
     """Queue the file downloads for images and videos."""
+    safe_thread_name = _safe_log_value(thread_name)
     try:
-        thread_name = thread_name.replace("'", "\x27")
+        if not FOLDER_NAME_PATTERN.fullmatch(thread_name):
+            logger.warning(
+                f"Rejecting unsafe folder name '{safe_thread_name}', skipping downloads"
+            )
+            return
+
         logger.debug(
-            f"Queueing {len(attachments)} attachment(s) for thread '{thread_name}'"
+            f"Queueing {len(attachments)} attachment(s) for thread '{safe_thread_name}'"
         )
 
         # Check if the folder ID is provided, if not, check if it exists
@@ -615,30 +736,40 @@ def queue_file_downloads(thread_name, attachments, folder_id=None) -> None:
             if folder_id is None:
                 folder_id = create_folder(thread_name)
 
-        logger.debug(f"Using folder {folder_id} for thread '{thread_name}'")
+        logger.debug(f"Using folder {folder_id} for thread '{safe_thread_name}'")
 
         if not folder_id:
             logger.warning(
-                f"No folder ID available for thread '{thread_name}', skipping downloads"
+                f"No folder ID available for thread '{safe_thread_name}', "
+                "skipping downloads"
             )
             return
+
+        max_size = _max_file_size_bytes()
 
         # Iterate through the attachments
         for attachment in attachments:
             url_lower = attachment.url.lower()
+            public_url = _public_url(attachment.url)
 
-            logger.debug(f"Attachment URL: {attachment.url}")
+            logger.debug(f"Attachment URL: {public_url}")
+
+            attachment_size = getattr(attachment, "size", None)
+            if attachment_size is not None and attachment_size > max_size:
+                logger.warning(
+                    f"Skipping attachment {public_url}: {attachment_size} bytes "
+                    f"exceeds the {MAX_FILE_SIZE_MB} MB limit"
+                )
+                continue
 
             # Check if the URL contains image or video extensions
             if any(ext in url_lower for ext in IMAGE_EXTENSIONS):
-                logger.debug(f"Found image attachment: {attachment.url}")
+                logger.debug(f"Found image attachment: {public_url}")
 
                 file_name = find_file_name(IMAGE_NAME_PATTERN, url_lower)
 
                 if file_name is None:
-                    logger.warning(
-                        f"Could not find image file name in {attachment.url}"
-                    )
+                    logger.warning(f"Could not find image file name in {public_url}")
                     continue
 
                 logger.debug(f"Found image name: {file_name}")
@@ -656,14 +787,12 @@ def queue_file_downloads(thread_name, attachments, folder_id=None) -> None:
 
             # Check if the URL contains video extensions
             elif any(ext in url_lower for ext in VIDEO_EXTENSIONS):
-                logger.debug(f"Found video attachment: {attachment.url}")
+                logger.debug(f"Found video attachment: {public_url}")
 
                 file_name = find_file_name(VIDEO_NAME_PATTERN, url_lower)
 
                 if file_name is None:
-                    logger.warning(
-                        f"Could not find video file name in {attachment.url}"
-                    )
+                    logger.warning(f"Could not find video file name in {public_url}")
                     continue
 
                 logger.debug(f"Found video name: {file_name}")
@@ -683,18 +812,25 @@ def queue_file_downloads(thread_name, attachments, folder_id=None) -> None:
             sleep(3)
 
     except Exception as e:
-        logger.error(f"Failed to queue downloads for thread '{thread_name}': {e}")
+        logger.error(
+            f"Failed to queue downloads for thread '{safe_thread_name}': "
+            f"{_safe_exception(e)}"
+        )
 
 
 async def process_message(message, thread_name=None, folder_id=None) -> None:
     """Process the message and download images/videos."""
     if "no upload" not in message.content.lower() and message.attachments:
-        logger.debug(f"Received attachments: {message.attachments}")
+        logger.debug(
+            f"Received {len(message.attachments)} attachment(s) for message "
+            f"{message.id}"
+        )
         if not thread_name:
             thread_name = message.channel.name
         logger.info(
             f"Processing message {message.id} with "
-            f"{len(message.attachments)} attachment(s) in thread '{thread_name}'"
+            f"{len(message.attachments)} attachment(s) in thread "
+            f"'{_safe_log_value(thread_name)}'"
         )
 
         EXECUTOR.submit(
@@ -719,13 +855,6 @@ async def process_message(message, thread_name=None, folder_id=None) -> None:
 @bot.event
 async def on_ready() -> None:
     """Event triggered when the bot is ready."""
-    try:
-        await bot.tree.sync()
-    except errors.HTTPException as e:
-        logger.error(f"Failed to start photo bot due to discord http exception: {e}")
-    except Exception as e:
-        logger.error(f"Failed to start photo bot with exception: {e}")
-
     global GUILD
     if GUILD_ID is None:
         logger.error("GUILD_ID is not set. Exiting.")
@@ -740,6 +869,20 @@ async def on_ready() -> None:
         logger.error("Failed to find guild")
         exit(1)
 
+    try:
+        # Commands are registered before config is loaded, so scope them to the
+        # configured guild here and remove any global registration that would
+        # expose them outside this server.
+        if bot.tree.get_commands():
+            bot.tree.copy_global_to(guild=GUILD)
+        bot.tree.clear_commands(guild=None)
+        await bot.tree.sync()
+        await bot.tree.sync(guild=GUILD)
+    except errors.HTTPException as e:
+        logger.error(f"Failed to start photo bot due to discord http exception: {e}")
+    except Exception as e:
+        logger.error(f"Failed to start photo bot with exception: {e}")
+
     logger.info(f"Logged in as {bot.user}")
 
 
@@ -749,7 +892,7 @@ async def on_message(message: message.Message) -> None:
     if isinstance(message.channel, Thread) and CHANNEL_NAME == str(
         message.channel.parent
     ):
-        logger.debug(f"Received message: {message.content}")
+        logger.debug(f"Received message: {_safe_log_value(message.content)}")
         await process_message(message)
 
 
@@ -761,13 +904,21 @@ async def on_message(message: message.Message) -> None:
 @app_commands.describe(thread_id="The ID of the thread to read messages from")
 async def read_thread(interaction: Interaction, thread_id: str) -> None:
     """Read all messages in a specific thread to upload photos."""
+    if not ensure_guild(interaction):
+        await interaction.response.send_message(
+            "This command can only be used in the configured server.",
+            ephemeral=True,
+        )
+        return
+
+    safe_thread_id = _safe_log_value(thread_id)
     try:
         # Defer the initial response, alter discord to show that
         # the bot is "thinking/processing"
         await interaction.response.defer(ephemeral=True)
 
         logger.info(
-            f"User {interaction.user} invoked /threadimages for thread {thread_id}"
+            f"User {interaction.user} invoked /threadimages for thread {safe_thread_id}"
         )
 
         # Fetch the thread using the provided thread ID
@@ -791,7 +942,8 @@ async def read_thread(interaction: Interaction, thread_id: str) -> None:
         else:
             # If the channel is not a thread, send an error message
             logger.warning(
-                f"Channel {thread_id} is not a thread (requested by {interaction.user})"
+                f"Channel {safe_thread_id} is not a thread "
+                f"(requested by {interaction.user})"
             )
             await interaction.followup.send(
                 "The provided ID does not correspond to a thread.", ephemeral=True
@@ -802,11 +954,11 @@ async def read_thread(interaction: Interaction, thread_id: str) -> None:
             "Thread not found. Please check the thread ID.", ephemeral=True
         )
         logger.warning(
-            f"Thread {thread_id} not found (requested by {interaction.user})"
+            f"Thread {safe_thread_id} not found (requested by {interaction.user})"
         )
     except Exception as e:
         logger.error(
-            f"/threadimages failed for thread {thread_id} "
+            f"/threadimages failed for thread {safe_thread_id} "
             f"(requested by {interaction.user}): {e}"
         )
 
@@ -826,6 +978,15 @@ async def read_message(
     interaction: Interaction, message_id: str, folder_name: str
 ) -> None:
     """Upload all attachments of a specific message."""
+    if not ensure_guild(interaction):
+        await interaction.response.send_message(
+            "This command can only be used in the configured server.",
+            ephemeral=True,
+        )
+        return
+
+    safe_message_id = _safe_log_value(message_id)
+    safe_folder_name = _safe_log_value(folder_name)
     try:
         # Defer the initial response, alter discord to show that
         # the bot is "thinking/processing"
@@ -833,7 +994,7 @@ async def read_message(
 
         logger.info(
             f"User {interaction.user} invoked /messageimages for message "
-            f"{message_id} into folder '{folder_name}'"
+            f"{safe_message_id} into folder '{safe_folder_name}'"
         )
 
         if not GUILD:
@@ -863,7 +1024,7 @@ async def read_message(
                 continue  # Bot doesn't have permission to read this channel
             except ValueError as e:
                 logger.warning(
-                    f"Given message id is not an integer: {message_id} "
+                    f"Given message id is not an integer: {safe_message_id} "
                     f"(requested by {interaction.user}): {e}"
                 )
 
@@ -881,13 +1042,13 @@ async def read_message(
             ephemeral=True,
         )
         logger.warning(
-            f"Message {message_id} not found in any accessible channels "
+            f"Message {safe_message_id} not found in any accessible channels "
             f"(requested by {interaction.user})"
         )
     except Exception as e:
         logger.error(
-            f"/messageimages failed for message {message_id} into folder "
-            f"'{folder_name}' (requested by {interaction.user}): {e}"
+            f"/messageimages failed for message {safe_message_id} into folder "
+            f"'{safe_folder_name}' (requested by {interaction.user}): {e}"
         )
 
         # If any other error occurs, send an error message
@@ -919,6 +1080,14 @@ async def help_message(interaction: Interaction) -> None:
 @app_commands.describe(folder_id="The folder ID to upload images to")
 async def change_folder_command(interaction: Interaction, folder_id: str) -> None:
     """A command that only allows users with a specific role to perform an action."""
+    if not ensure_guild(interaction):
+        await interaction.response.send_message(
+            "This command can only be used in the configured server.",
+            ephemeral=True,
+        )
+        return
+
+    safe_folder_id = _safe_log_value(folder_id)
     try:
         # Check if the user is a guild member and has the required role
         if isinstance(interaction.user, Member):
@@ -927,8 +1096,8 @@ async def change_folder_command(interaction: Interaction, folder_id: str) -> Non
             member = await interaction.guild.fetch_member(interaction.user.id)
         else:
             logger.warning(
-                f"User {interaction.user} attempted /changefolder to {folder_id} "
-                "outside a guild"
+                f"User {interaction.user} attempted /changefolder to "
+                f"{safe_folder_id} outside a guild"
             )
             await interaction.response.send_message(
                 "This command can only be used within a server.",
@@ -943,7 +1112,7 @@ async def change_folder_command(interaction: Interaction, folder_id: str) -> Non
                 if not check_parent_folder_id(folder_id):
                     logger.warning(
                         f"User {interaction.user} provided invalid folder ID "
-                        f"{folder_id} to /changefolder"
+                        f"{safe_folder_id} to /changefolder"
                     )
                     await interaction.followup.send(
                         "Invalid folder ID provided.",
@@ -959,11 +1128,13 @@ async def change_folder_command(interaction: Interaction, folder_id: str) -> Non
                     "Folder ID updated successfully!",
                     ephemeral=True,
                 )
-                logger.info(f"Folder ID changed to {folder_id} by {interaction.user}")
+                logger.info(
+                    f"Folder ID changed to {safe_folder_id} by {interaction.user}"
+                )
             else:
                 logger.warning(
                     f"User {interaction.user} without role '{ROLE_NAME}' "
-                    f"attempted /changefolder to {folder_id}"
+                    f"attempted /changefolder to {safe_folder_id}"
                 )
                 await interaction.response.send_message(
                     "You do not have the required role to perform this action.",
@@ -971,8 +1142,8 @@ async def change_folder_command(interaction: Interaction, folder_id: str) -> Non
                 )
         else:
             logger.warning(
-                f"User {interaction.user} attempted /changefolder to {folder_id} "
-                "outside a guild"
+                f"User {interaction.user} attempted /changefolder to "
+                f"{safe_folder_id} outside a guild"
             )
             await interaction.response.send_message(
                 "This command can only be used within a server.",
@@ -980,7 +1151,7 @@ async def change_folder_command(interaction: Interaction, folder_id: str) -> Non
             )
     except Exception as e:
         logger.error(
-            f"/changefolder failed for folder {folder_id} "
+            f"/changefolder failed for folder {safe_folder_id} "
             f"(requested by {interaction.user}): {e}"
         )
         if not interaction.response.is_done():
@@ -993,7 +1164,7 @@ def load_config() -> None:
     """Load env vars and required config, raising ValueError on missing vars."""
     global DISCORD_TOKEN, CHANNEL_NAME, SHARED_DRIVE_ID, GUILD_ID
     global VIDEO_IN_MEMORY, DELEGATE_EMAIL, LOG_LEVEL, ROLE_NAME
-    global PARENT_FOLDER_ID
+    global PARENT_FOLDER_ID, MAX_FILE_SIZE_MB
 
     # Load environment variables from .env file
     load_dotenv()
@@ -1006,6 +1177,11 @@ def load_config() -> None:
     DELEGATE_EMAIL = getenv("DELEGATE_EMAIL")
     LOG_LEVEL = getenv("LOG_LEVEL", "INFO").upper()
     ROLE_NAME = getenv("ROLE_NAME")
+
+    try:
+        MAX_FILE_SIZE_MB = int(getenv("MAX_FILE_SIZE_MB", "50"))
+    except ValueError:
+        MAX_FILE_SIZE_MB = 50
 
     if os.path.exists(parent_folder_file):
         print("Reading parent folder ID from file")
@@ -1034,14 +1210,18 @@ def load_config() -> None:
 
 
 def init_sentry() -> None:
-    """Setup Sentry."""
+    """Setup Sentry only when a DSN is configured."""
+    dsn = getenv("SENTRY_DSN")
+    if not dsn:
+        return
+
     sentry_sdk.init(
-        dsn=getenv("SENTRY_DSN", ""),
+        dsn=dsn,
         integrations=[
             AioHttpIntegration(),  # For async HTTP requests
             StdlibIntegration(),  # For threading-related error tracking
         ],
-        traces_sample_rate=float(getenv("SENTRY_TRACE_RATE", 1.0)),
+        traces_sample_rate=float(getenv("SENTRY_TRACE_RATE", 0.2)),
     )
 
 
