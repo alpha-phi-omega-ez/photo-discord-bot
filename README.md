@@ -61,7 +61,7 @@ ruff format
 
 This project is currently deployed with Docker. On commit to the main branch GitHub actions builds and pushes new versions of the Docker image to the [photo-discord-bot packages](https://github.com/alpha-phi-omega-ez/photo-discord-bot/pkgs/container/photo-discord-bot)
 
-The runtime container runs as the non-root user `appuser` (UID 10001). Mount `config/` read/write and make sure it is writable by UID 10001, because `/changefolder` rewrites `config/parent_folder_id.txt`; the service-account JSON is only read.
+The runtime container runs as the numeric non-root user UID 10001. Mount `config/` read/write and make sure it is writable by UID 10001, because `/changefolder` rewrites `config/parent_folder_id.txt`; the service-account JSON is only read.
 
 ## Authors
 
