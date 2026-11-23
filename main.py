@@ -64,6 +64,10 @@ intents.guilds = True
 
 GUILD = None
 
+# Command registration is synced to Discord once per process; re-syncing on
+# every reconnect would burn the per-guild command update budget for no change
+_commands_synced = False
+
 # Global variables
 IMAGE_EXTENSIONS = (
     ".png",
@@ -255,7 +259,7 @@ def check_folder_exists(folder_name: str) -> str | None:
             except Exception as e:
                 logger.warning(
                     f"Failed to find folder '{safe_folder_name}' "
-                    f"(attempt {attempt + 1}/5): {e}"
+                    f"(attempt {attempt + 1}/5): {_safe_exception(e)}"
                 )
                 if attempt < 4:  # Don't sleep after last attempt
                     sleep(EXPONENTIAL_BACKOFF_DELAYS[attempt])
@@ -273,7 +277,9 @@ def check_folder_exists(folder_name: str) -> str | None:
 
         logger.info(f"Folder '{safe_folder_name}' does not exist yet")
     except Exception as e:
-        logger.error(f"Failed to find folder '{safe_folder_name}': {e}")
+        logger.error(
+            f"Failed to find folder '{safe_folder_name}': {_safe_exception(e)}"
+        )
     return None
 
 
@@ -309,7 +315,7 @@ def create_folder(folder_name) -> str | None:
             except Exception as e:
                 logger.warning(
                     f"Failed to create folder '{safe_folder_name}' "
-                    f"(attempt {attempt + 1}/5): {e}"
+                    f"(attempt {attempt + 1}/5): {_safe_exception(e)}"
                 )
                 if attempt < 4:  # Don't sleep after last attempt
                     sleep(EXPONENTIAL_BACKOFF_DELAYS[attempt])
@@ -326,7 +332,9 @@ def create_folder(folder_name) -> str | None:
             f"in parent {PARENT_FOLDER_ID}"
         )
     except Exception as e:
-        logger.error(f"Failed to create folder '{safe_folder_name}': {e}")
+        logger.error(
+            f"Failed to create folder '{safe_folder_name}': {_safe_exception(e)}"
+        )
     return None
 
 
@@ -359,7 +367,7 @@ def convert_to_jpeg(image_data, file_name, extension):
     except Exception as e:
         logger.warning(
             f"Failed to convert HEIC/HEIF image {safe_file_name}, "
-            f"uploading original: {e}"
+            f"uploading original: {_safe_exception(e)}"
         )
         return image_data, file_name, extension
 
@@ -415,7 +423,7 @@ def upload(
                     logger.warning(
                         f"Failed to upload {safe_file_name} to folder {folder_id} "
                         f"(thread '{safe_thread_name}', attempt "
-                        f"{attempt + 1}/5): {e}"
+                        f"{attempt + 1}/5): {_safe_exception(e)}"
                     )
                     if attempt < 4:  # Don't sleep after last attempt
                         sleep(EXPONENTIAL_BACKOFF_DELAYS[attempt])
@@ -539,20 +547,19 @@ def download_video(folder_id, url, file_name, extension, thread_name, retry) -> 
             f"{folder_id} (thread '{safe_thread_name}')"
         )
 
+        # Get the file size from the URL once; the size is constant across
+        # retry attempts, so repeating the HEAD request would just burn requests
+        file_size = get_file_size(url)
+        logger.debug(f"File size for {public_url}: {file_size} bytes")
+        if file_size and file_size > max_size:
+            logger.warning(
+                f"Skipping video {safe_file_name} from {public_url}: "
+                f"{file_size} bytes exceeds the {MAX_FILE_SIZE_MB} MB limit"
+            )
+            return
+
         for attempt in range(5):
             try:
-                # Get the file size from the URL
-                file_size = get_file_size(url)
-
-                logger.debug(f"File size for {public_url}: {file_size} bytes")
-
-                if file_size and file_size > max_size:
-                    logger.warning(
-                        f"Skipping video {safe_file_name} from {public_url}: "
-                        f"{file_size} bytes exceeds the {MAX_FILE_SIZE_MB} MB limit"
-                    )
-                    return
-
                 # Request the video data
                 response = get(url, stream=True, timeout=REQUEST_TIMEOUT)
                 logger.debug(f"Response {public_url}: {response.status_code}")
@@ -682,6 +689,7 @@ def download_video(folder_id, url, file_name, extension, thread_name, retry) -> 
                         f"{public_url}: status {response.status_code} "
                         f"(attempt {attempt + 1}/5)"
                     )
+                    response.close()
             except Exception as e:
                 logger.warning(
                     f"Failed to download video {safe_file_name} from {public_url} "
@@ -864,7 +872,7 @@ async def process_message(message, thread_name=None, folder_id=None) -> None:
                 else:
                     await message.add_reaction("👍")
             except errors.HTTPException as e:
-                logger.debug(f"Failed to add reaction: {e}")
+                logger.debug(f"Failed to add reaction: {_safe_exception(e)}")
                 await message.add_reaction("👍")
         else:
             await message.add_reaction("👍")
@@ -873,7 +881,7 @@ async def process_message(message, thread_name=None, folder_id=None) -> None:
 @bot.event
 async def on_ready() -> None:
     """Event triggered when the bot is ready."""
-    global GUILD
+    global GUILD, _commands_synced
     if GUILD_ID is None:
         logger.error("GUILD_ID is not set. Exiting.")
         exit(1)
@@ -887,19 +895,29 @@ async def on_ready() -> None:
         logger.error("Failed to find guild")
         exit(1)
 
-    try:
-        # Commands are registered before config is loaded, so scope them to the
-        # configured guild here and remove any global registration that would
-        # expose them outside this server.
-        if bot.tree.get_commands():
-            bot.tree.copy_global_to(guild=GUILD)
-        bot.tree.clear_commands(guild=None)
-        await bot.tree.sync()
-        await bot.tree.sync(guild=GUILD)
-    except errors.HTTPException as e:
-        logger.error(f"Failed to start photo bot due to discord http exception: {e}")
-    except Exception as e:
-        logger.error(f"Failed to start photo bot with exception: {e}")
+    if not _commands_synced:
+        try:
+            # Commands are registered before config is loaded, so scope them to
+            # the configured guild here and remove any global registration that
+            # would expose them outside this server. The command set is static
+            # for the life of the process, so this runs once; re-syncing on
+            # every reconnect would only burn the per-guild command update
+            # budget with no change.
+            if bot.tree.get_commands():
+                bot.tree.copy_global_to(guild=GUILD)
+            bot.tree.clear_commands(guild=None)
+            await bot.tree.sync()
+            await bot.tree.sync(guild=GUILD)
+            _commands_synced = True
+        except errors.HTTPException as e:
+            logger.error(
+                f"Failed to start photo bot due to discord http exception: "
+                f"{_safe_exception(e)}"
+            )
+        except Exception as e:
+            logger.error(
+                f"Failed to start photo bot with exception: {_safe_exception(e)}"
+            )
 
     logger.info(f"Logged in as {bot.user}")
 
@@ -977,7 +995,7 @@ async def read_thread(interaction: Interaction, thread_id: str) -> None:
     except Exception as e:
         logger.error(
             f"/threadimages failed for thread {safe_thread_id} "
-            f"(requested by {interaction.user}): {e}"
+            f"(requested by {interaction.user}): {_safe_exception(e)}"
         )
 
         # If any other error occurs, send an error message
@@ -1046,7 +1064,7 @@ async def read_message(
             except ValueError as e:
                 logger.warning(
                     f"Given message id is not an integer: {safe_message_id} "
-                    f"(requested by {interaction.user}): {e}"
+                    f"(requested by {interaction.user}): {_safe_exception(e)}"
                 )
 
                 # If the message ID is not an integer, send an error message
@@ -1069,7 +1087,8 @@ async def read_message(
     except Exception as e:
         logger.error(
             f"/messageimages failed for message {safe_message_id} into folder "
-            f"'{safe_folder_name}' (requested by {interaction.user}): {e}"
+            f"'{safe_folder_name}' (requested by {interaction.user}): "
+            f"{_safe_exception(e)}"
         )
 
         # If any other error occurs, send an error message
@@ -1173,7 +1192,7 @@ async def change_folder_command(interaction: Interaction, folder_id: str) -> Non
     except Exception as e:
         logger.error(
             f"/changefolder failed for folder {safe_folder_id} "
-            f"(requested by {interaction.user}): {e}"
+            f"(requested by {interaction.user}): {_safe_exception(e)}"
         )
         if not interaction.response.is_done():
             await interaction.followup.send(

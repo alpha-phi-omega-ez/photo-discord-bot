@@ -107,3 +107,41 @@ async def test_on_ready_moves_global_commands_into_guild(monkeypatch):
     tree.clear_commands.assert_called_once_with(guild=None)
     assert tree.sync.await_count == 2
     assert any(call.kwargs == {"guild": guild} for call in tree.sync.await_args_list)
+
+
+async def test_on_ready_does_not_resync_on_reconnect(monkeypatch):
+    monkeypatch.setattr(main, "GUILD_ID", GUILD_ID)
+    guild = MagicMock(id=int(GUILD_ID))
+    monkeypatch.setattr(main.bot, "get_guild", MagicMock(return_value=guild))
+    monkeypatch.setattr(type(main.bot), "user", property(lambda _self: "test-bot"))
+
+    tree = MagicMock()
+    tree.get_commands.return_value = [MagicMock()]
+    tree.sync = AsyncMock()
+    monkeypatch.setattr(type(main.bot), "tree", property(lambda _self: tree))
+
+    await main.on_ready()
+    await main.on_ready()
+
+    assert tree.sync.await_count == 2
+    tree.copy_global_to.assert_called_once()
+
+
+async def test_on_ready_retries_sync_after_failure(monkeypatch):
+    monkeypatch.setattr(main, "GUILD_ID", GUILD_ID)
+    guild = MagicMock(id=int(GUILD_ID))
+    monkeypatch.setattr(main.bot, "get_guild", MagicMock(return_value=guild))
+    monkeypatch.setattr(type(main.bot), "user", property(lambda _self: "test-bot"))
+
+    tree = MagicMock()
+    tree.get_commands.side_effect = [[MagicMock()], []]
+    tree.sync = AsyncMock(side_effect=[RuntimeError("boom"), [], []])
+    monkeypatch.setattr(type(main.bot), "tree", property(lambda _self: tree))
+
+    await main.on_ready()
+    assert main._commands_synced is False
+
+    await main.on_ready()
+
+    assert tree.sync.await_count == 3
+    assert main._commands_synced is True

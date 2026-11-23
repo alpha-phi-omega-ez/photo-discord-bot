@@ -118,6 +118,43 @@ def test_video_mid_stream_abort_while_writing_to_memory(monkeypatch, caplog):
     assert "exceeded the 1 MB limit mid-stream" in caplog.text
 
 
+def test_video_head_size_requested_once_across_retries(monkeypatch):
+    monkeypatch.setattr(main, "MAX_FILE_SIZE_MB", 1)
+    monkeypatch.setattr(main, "sleep", lambda _seconds: None)
+    get_file_size = MagicMock(return_value=None)
+    monkeypatch.setattr(main, "get_file_size", get_file_size)
+    response = MagicMock()
+    response.status_code = 503
+    response.headers = {}
+    get = MagicMock(return_value=response)
+    monkeypatch.setattr(main, "get", get)
+    upload = MagicMock()
+    monkeypatch.setattr(main, "upload", upload)
+
+    main.download_video("folder-id", URL, "clip.mp4", "mp4", "thread", True)
+
+    get_file_size.assert_called_once()
+    assert get.call_count == 5
+    assert response.close.call_count == 5
+    upload.assert_not_called()
+
+
+def test_video_skipped_before_download_when_head_reports_oversize(monkeypatch):
+    monkeypatch.setattr(main, "MAX_FILE_SIZE_MB", 1)
+    get_file_size = MagicMock(return_value=2 * MAX_BYTES)
+    monkeypatch.setattr(main, "get_file_size", get_file_size)
+    get = MagicMock()
+    monkeypatch.setattr(main, "get", get)
+    upload = MagicMock()
+    monkeypatch.setattr(main, "upload", upload)
+
+    main.download_video("folder-id", URL, "clip.mp4", "mp4", "thread", False)
+
+    get_file_size.assert_called_once()
+    get.assert_not_called()
+    upload.assert_not_called()
+
+
 def test_download_image_uses_request_timeout(monkeypatch):
     response = MagicMock()
     response.status_code = 200
