@@ -53,8 +53,9 @@ parent_folder_file = "config/parent_folder_id.txt"
 REQUEST_TIMEOUT = (5, 30)
 # Maximum accepted download size per file; overridable through MAX_FILE_SIZE_MB
 MAX_FILE_SIZE_MB = 50
-# Defense-in-depth allowlist for folder names derived from Discord threads
-FOLDER_NAME_PATTERN = re_compile(r"[\w\- ]{1,100}")
+# Drive folder names derived from thread names are sanitized onto this charset
+UNSAFE_FOLDER_CHARS = re_compile(r"[^\w\- ]+")
+REPEATED_UNDERSCORES = re_compile(r"_{2,}")
 
 # Setup Discord intents
 intents = Intents.default()
@@ -62,6 +63,10 @@ intents.message_content = True
 intents.guilds = True
 
 GUILD = None
+
+# Command registration is synced to Discord once per process; re-syncing on
+# every reconnect would burn the per-guild command update budget for no change
+_commands_synced = False
 
 # Global variables
 IMAGE_EXTENSIONS = (
@@ -131,6 +136,14 @@ def escape_drive_query_value(value: str) -> str:
     backslashes must be escaped before quotes.
     """
     return value.replace("\\", "\\\\").replace("'", "\\'")
+
+
+def sanitize_folder_name(name: str) -> str:
+    """Deterministically map a thread name onto the Drive folder charset."""
+    safe_name = UNSAFE_FOLDER_CHARS.sub("_", name or "")
+    safe_name = REPEATED_UNDERSCORES.sub("_", safe_name).strip(" _")
+    safe_name = safe_name[:100].rstrip(" _")
+    return safe_name or "attachments"
 
 
 def ensure_guild(interaction: Interaction) -> bool:
@@ -207,7 +220,8 @@ def check_parent_folder_id(folder_id: str) -> bool:
         return True
     except Exception as e:
         logger.warning(
-            f"Invalid folder ID provided: {_safe_log_value(folder_id)} - {e}"
+            f"Invalid folder ID provided: {_safe_log_value(folder_id)} - "
+            f"{_safe_exception(e)}"
         )
     return False
 
@@ -245,7 +259,7 @@ def check_folder_exists(folder_name: str) -> str | None:
             except Exception as e:
                 logger.warning(
                     f"Failed to find folder '{safe_folder_name}' "
-                    f"(attempt {attempt + 1}/5): {e}"
+                    f"(attempt {attempt + 1}/5): {_safe_exception(e)}"
                 )
                 if attempt < 4:  # Don't sleep after last attempt
                     sleep(EXPONENTIAL_BACKOFF_DELAYS[attempt])
@@ -263,7 +277,9 @@ def check_folder_exists(folder_name: str) -> str | None:
 
         logger.info(f"Folder '{safe_folder_name}' does not exist yet")
     except Exception as e:
-        logger.error(f"Failed to find folder '{safe_folder_name}': {e}")
+        logger.error(
+            f"Failed to find folder '{safe_folder_name}': {_safe_exception(e)}"
+        )
     return None
 
 
@@ -299,7 +315,7 @@ def create_folder(folder_name) -> str | None:
             except Exception as e:
                 logger.warning(
                     f"Failed to create folder '{safe_folder_name}' "
-                    f"(attempt {attempt + 1}/5): {e}"
+                    f"(attempt {attempt + 1}/5): {_safe_exception(e)}"
                 )
                 if attempt < 4:  # Don't sleep after last attempt
                     sleep(EXPONENTIAL_BACKOFF_DELAYS[attempt])
@@ -316,7 +332,9 @@ def create_folder(folder_name) -> str | None:
             f"in parent {PARENT_FOLDER_ID}"
         )
     except Exception as e:
-        logger.error(f"Failed to create folder '{safe_folder_name}': {e}")
+        logger.error(
+            f"Failed to create folder '{safe_folder_name}': {_safe_exception(e)}"
+        )
     return None
 
 
@@ -349,7 +367,7 @@ def convert_to_jpeg(image_data, file_name, extension):
     except Exception as e:
         logger.warning(
             f"Failed to convert HEIC/HEIF image {safe_file_name}, "
-            f"uploading original: {e}"
+            f"uploading original: {_safe_exception(e)}"
         )
         return image_data, file_name, extension
 
@@ -405,7 +423,7 @@ def upload(
                     logger.warning(
                         f"Failed to upload {safe_file_name} to folder {folder_id} "
                         f"(thread '{safe_thread_name}', attempt "
-                        f"{attempt + 1}/5): {e}"
+                        f"{attempt + 1}/5): {_safe_exception(e)}"
                     )
                     if attempt < 4:  # Don't sleep after last attempt
                         sleep(EXPONENTIAL_BACKOFF_DELAYS[attempt])
@@ -430,8 +448,8 @@ def upload(
         sleep(1)
     except Exception as e:
         logger.error(
-            f"Failed to queue downloads for thread '{safe_thread_name}': "
-            f"{_safe_exception(e)}"
+            f"Failed to upload {safe_file_name} to thread '{safe_thread_name}' "
+            f"in folder {folder_id}: {_safe_exception(e)}"
         )
 
 
@@ -529,20 +547,19 @@ def download_video(folder_id, url, file_name, extension, thread_name, retry) -> 
             f"{folder_id} (thread '{safe_thread_name}')"
         )
 
+        # Get the file size from the URL once; the size is constant across
+        # retry attempts, so repeating the HEAD request would just burn requests
+        file_size = get_file_size(url)
+        logger.debug(f"File size for {public_url}: {file_size} bytes")
+        if file_size and file_size > max_size:
+            logger.warning(
+                f"Skipping video {safe_file_name} from {public_url}: "
+                f"{file_size} bytes exceeds the {MAX_FILE_SIZE_MB} MB limit"
+            )
+            return
+
         for attempt in range(5):
             try:
-                # Get the file size from the URL
-                file_size = get_file_size(url)
-
-                logger.debug(f"File size for {public_url}: {file_size} bytes")
-
-                if file_size and file_size > max_size:
-                    logger.warning(
-                        f"Skipping video {safe_file_name} from {public_url}: "
-                        f"{file_size} bytes exceeds the {MAX_FILE_SIZE_MB} MB limit"
-                    )
-                    return
-
                 # Request the video data
                 response = get(url, stream=True, timeout=REQUEST_TIMEOUT)
                 logger.debug(f"Response {public_url}: {response.status_code}")
@@ -557,6 +574,7 @@ def download_video(folder_id, url, file_name, extension, thread_name, retry) -> 
                                     f"{public_url}: {response_size} bytes exceeds "
                                     f"the {MAX_FILE_SIZE_MB} MB limit"
                                 )
+                                response.close()
                                 return
                         except (TypeError, ValueError):
                             pass
@@ -583,6 +601,7 @@ def download_video(folder_id, url, file_name, extension, thread_name, retry) -> 
                                     f"{public_url}: exceeded the "
                                     f"{MAX_FILE_SIZE_MB} MB limit mid-stream"
                                 )
+                                response.close()
                                 return
                             video_stream.write(chunk)
 
@@ -626,6 +645,7 @@ def download_video(folder_id, url, file_name, extension, thread_name, retry) -> 
                                     f"{public_url}: exceeded the "
                                     f"{MAX_FILE_SIZE_MB} MB limit mid-stream"
                                 )
+                                response.close()
                                 temp_file.close()
                                 unlink(temp_file.name)
                                 return
@@ -669,6 +689,7 @@ def download_video(folder_id, url, file_name, extension, thread_name, retry) -> 
                         f"{public_url}: status {response.status_code} "
                         f"(attempt {attempt + 1}/5)"
                     )
+                    response.close()
             except Exception as e:
                 logger.warning(
                     f"Failed to download video {safe_file_name} from {public_url} "
@@ -712,19 +733,24 @@ def find_file_name(pattern, url) -> str | None:
     try:
         return pattern.findall(url)[0].replace(" ", "_")
     except Exception as e:
-        logger.warning(f"Failed to find file name from {_public_url(url)}: {e}")
+        logger.warning(
+            f"Failed to find file name from {_public_url(url)}: {_safe_exception(e)}"
+        )
     return None
 
 
 def queue_file_downloads(thread_name, attachments, folder_id=None) -> None:
     """Queue the file downloads for images and videos."""
-    safe_thread_name = _safe_log_value(thread_name)
+    raw_thread_name = thread_name
+    safe_thread_name = _safe_log_value(raw_thread_name)
     try:
-        if not FOLDER_NAME_PATTERN.fullmatch(thread_name):
-            logger.warning(
-                f"Rejecting unsafe folder name '{safe_thread_name}', skipping downloads"
+        # Thread names can contain characters Drive rejects in folder names;
+        # map them onto the safe charset instead of skipping the upload.
+        thread_name = sanitize_folder_name(raw_thread_name)
+        if thread_name != raw_thread_name:
+            logger.info(
+                f"Sanitized folder name '{safe_thread_name}' to '{thread_name}'"
             )
-            return
 
         logger.debug(
             f"Queueing {len(attachments)} attachment(s) for thread '{safe_thread_name}'"
@@ -846,7 +872,7 @@ async def process_message(message, thread_name=None, folder_id=None) -> None:
                 else:
                     await message.add_reaction("👍")
             except errors.HTTPException as e:
-                logger.debug(f"Failed to add reaction: {e}")
+                logger.debug(f"Failed to add reaction: {_safe_exception(e)}")
                 await message.add_reaction("👍")
         else:
             await message.add_reaction("👍")
@@ -855,7 +881,7 @@ async def process_message(message, thread_name=None, folder_id=None) -> None:
 @bot.event
 async def on_ready() -> None:
     """Event triggered when the bot is ready."""
-    global GUILD
+    global GUILD, _commands_synced
     if GUILD_ID is None:
         logger.error("GUILD_ID is not set. Exiting.")
         exit(1)
@@ -869,19 +895,29 @@ async def on_ready() -> None:
         logger.error("Failed to find guild")
         exit(1)
 
-    try:
-        # Commands are registered before config is loaded, so scope them to the
-        # configured guild here and remove any global registration that would
-        # expose them outside this server.
-        if bot.tree.get_commands():
-            bot.tree.copy_global_to(guild=GUILD)
-        bot.tree.clear_commands(guild=None)
-        await bot.tree.sync()
-        await bot.tree.sync(guild=GUILD)
-    except errors.HTTPException as e:
-        logger.error(f"Failed to start photo bot due to discord http exception: {e}")
-    except Exception as e:
-        logger.error(f"Failed to start photo bot with exception: {e}")
+    if not _commands_synced:
+        try:
+            # Commands are registered before config is loaded, so scope them to
+            # the configured guild here and remove any global registration that
+            # would expose them outside this server. The command set is static
+            # for the life of the process, so this runs once; re-syncing on
+            # every reconnect would only burn the per-guild command update
+            # budget with no change.
+            if bot.tree.get_commands():
+                bot.tree.copy_global_to(guild=GUILD)
+            bot.tree.clear_commands(guild=None)
+            await bot.tree.sync()
+            await bot.tree.sync(guild=GUILD)
+            _commands_synced = True
+        except errors.HTTPException as e:
+            logger.error(
+                f"Failed to start photo bot due to discord http exception: "
+                f"{_safe_exception(e)}"
+            )
+        except Exception as e:
+            logger.error(
+                f"Failed to start photo bot with exception: {_safe_exception(e)}"
+            )
 
     logger.info(f"Logged in as {bot.user}")
 
@@ -959,7 +995,7 @@ async def read_thread(interaction: Interaction, thread_id: str) -> None:
     except Exception as e:
         logger.error(
             f"/threadimages failed for thread {safe_thread_id} "
-            f"(requested by {interaction.user}): {e}"
+            f"(requested by {interaction.user}): {_safe_exception(e)}"
         )
 
         # If any other error occurs, send an error message
@@ -987,6 +1023,9 @@ async def read_message(
 
     safe_message_id = _safe_log_value(message_id)
     safe_folder_name = _safe_log_value(folder_name)
+    folder_name = sanitize_folder_name(folder_name)
+    if folder_name != safe_folder_name:
+        logger.info(f"Sanitized folder name '{safe_folder_name}' to '{folder_name}'")
     try:
         # Defer the initial response, alter discord to show that
         # the bot is "thinking/processing"
@@ -1025,7 +1064,7 @@ async def read_message(
             except ValueError as e:
                 logger.warning(
                     f"Given message id is not an integer: {safe_message_id} "
-                    f"(requested by {interaction.user}): {e}"
+                    f"(requested by {interaction.user}): {_safe_exception(e)}"
                 )
 
                 # If the message ID is not an integer, send an error message
@@ -1048,7 +1087,8 @@ async def read_message(
     except Exception as e:
         logger.error(
             f"/messageimages failed for message {safe_message_id} into folder "
-            f"'{safe_folder_name}' (requested by {interaction.user}): {e}"
+            f"'{safe_folder_name}' (requested by {interaction.user}): "
+            f"{_safe_exception(e)}"
         )
 
         # If any other error occurs, send an error message
@@ -1152,7 +1192,7 @@ async def change_folder_command(interaction: Interaction, folder_id: str) -> Non
     except Exception as e:
         logger.error(
             f"/changefolder failed for folder {safe_folder_id} "
-            f"(requested by {interaction.user}): {e}"
+            f"(requested by {interaction.user}): {_safe_exception(e)}"
         )
         if not interaction.response.is_done():
             await interaction.followup.send(
@@ -1181,6 +1221,9 @@ def load_config() -> None:
     try:
         MAX_FILE_SIZE_MB = int(getenv("MAX_FILE_SIZE_MB", "50"))
     except ValueError:
+        MAX_FILE_SIZE_MB = 50
+    if MAX_FILE_SIZE_MB < 1:
+        logger.warning("MAX_FILE_SIZE_MB must be positive, falling back to 50")
         MAX_FILE_SIZE_MB = 50
 
     if os.path.exists(parent_folder_file):

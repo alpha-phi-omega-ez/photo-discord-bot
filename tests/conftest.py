@@ -41,6 +41,7 @@ MODULE_STATE_GLOBALS = (
     "GUILD",
     "parent_folder_file",
     "MAX_FILE_SIZE_MB",
+    "_commands_synced",
 )
 
 
